@@ -58,7 +58,19 @@ const rendererBoundary = {
 };
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '**/*.config.js'] },
+  {
+    ignores: [
+      'dist/**',
+      'node_modules/**',
+      'coverage/**',
+      '**/*.config.js',
+      // Subagent git worktrees are separate checkouts of this branch. Without this,
+      // `eslint .` lints other agents' in-progress code and reports it as this
+      // repo's status — green here could mask a real failure, and their transient
+      // breakage would surface as ours.
+      '.claude/**',
+    ],
+  },
   ...tseslint.configs.strictTypeChecked,
   {
     languageOptions: {
