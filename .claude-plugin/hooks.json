@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hooks/sessionstart-inject-math.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "matcher": "*",

@@ -26,8 +26,22 @@ OUT=""
 case "$FILE" in
   *.ts|*.tsx|*.js|*.jsx)
     if [[ -x node_modules/.bin/eslint ]]; then
-      if ! LINT="$(node_modules/.bin/eslint --format unix "$FILE" 2>&1)"; then
-        OUT+="ESLint:"$'\n'"$LINT"$'\n'
+      # ESLint 9 dropped the `unix`/`compact` formatters from core. Use the built-in
+      # json formatter and render one terse line per problem — cheapest stable form.
+      if ! RAW="$(node_modules/.bin/eslint --format json "$FILE" 2>/dev/null)"; then
+        LINT="$(printf '%s' "$RAW" | python3 -c '
+import json, sys
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for f in files:
+    for m in f.get("messages", []):
+        sev = "error" if m.get("severity") == 2 else "warn"
+        rule = m.get("ruleId") or "parse"
+        print(f'"'"'{f["filePath"]}:{m.get("line",0)}:{m.get("column",0)} {sev} {m.get("message","")} [{rule}]'"'"')
+')"
+        [[ -n "${LINT// }" ]] && OUT+="ESLint:"$'\n'"$LINT"$'\n'
       fi
     fi
     ;;

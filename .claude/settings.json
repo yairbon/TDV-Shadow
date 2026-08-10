@@ -1,6 +1,18 @@
 {
-  "$comment": "Project settings. The same hooks are declared in .claude-plugin/hooks.json for when TDV-Shadow is consumed as a plugin; these entries make them active for anyone working in this repo directly.",
+  "$comment": "Project settings. The same hooks are declared in .claude-plugin/hooks.json for when TDV-Shadow is consumed as a plugin; these entries make them active for anyone working in this repo directly. Context preservation across compaction is SessionStart's job, not PreCompact's — PreCompact cannot inject context, it can only verify and block.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude-plugin/hooks/sessionstart-inject-math.sh\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "matcher": "*",

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": ["vitest/globals"],
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+
+    // Deliberately OFF. Root mandate #6 bans non-null `!` in src/renderer and src/data,
+    // and `noUncheckedIndexedAccess` would make every `bars[i]` in a hot draw loop
+    // `Bar | undefined` — forcing either a banned `!` or a per-bar branch that breaks the
+    // 8ms/5000-bar budget in skills/chart-render/SKILL.md. Bounds are instead guaranteed
+    // structurally: the visible range is clamped to [0, n-1] by timeScale (RENDER_ALGORITHMS §5)
+    // before any loop runs. Revisit if a bounds bug ever ships.
+    "noUncheckedIndexedAccess": false,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

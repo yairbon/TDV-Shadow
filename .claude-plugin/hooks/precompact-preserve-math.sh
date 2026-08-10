@@ -1,46 +1,44 @@
 #!/usr/bin/env bash
 # PreCompact hook.
-# Re-injects the load-bearing coordinate-transformation math into the post-compaction
-# context so the summarizer cannot lossily paraphrase the equations.
 #
-# Contract: stdin = hook JSON payload (ignored). stdout = additionalContext.
+# IMPORTANT: PreCompact CANNOT inject context. Per the hooks reference it supports only
+# `decision: "block"` (+ reason) and exit code 2 to abort compaction — hookSpecificOutput
+# .additionalContext is ignored for this event. Re-injection is therefore done by the
+# SessionStart hook (matcher: compact), which DOES support additionalContext.
+#
+# This hook's job is the half PreCompact can actually do:
+#   1. Verify the canonical math doc exists and still carries its MATH-CRITICAL markers.
+#   2. Stage a verbatim snapshot of that block to disk, so the post-compaction
+#      SessionStart hook has something guaranteed-current to re-inject.
+#   3. Block compaction outright if the math would be lost with no way to restore it.
 set -uo pipefail
 
 ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 MATH_FILE="$ROOT/docs/RENDER_ALGORITHMS.md"
+SNAPSHOT="$ROOT/.claude/.math-snapshot.md"
 
-emit() {
-  # jq-free JSON string escaping: backslashes, quotes, newlines, tabs, CR.
-  python3 - "$1" <<'PY'
-import json, sys
-body = sys.argv[1]
-print(json.dumps({
-    "hookSpecificOutput": {
-        "hookEventName": "PreCompact",
-        "additionalContext": body,
-    }
-}))
-PY
+block() {
+  printf '%s\n' "$1" >&2
+  exit 2   # PreCompact: exit 2 aborts the compaction
 }
 
-if [[ ! -f "$MATH_FILE" ]]; then
-  emit "PRESERVED (compaction-critical): docs/RENDER_ALGORITHMS.md is MISSING. Recreate it before writing renderer code; do not re-derive coordinate math from memory."
-  exit 0
-fi
+[[ -f "$MATH_FILE" ]] && \
+  grep -q 'MATH-CRITICAL:BEGIN' "$MATH_FILE" || \
+  block "Compaction aborted: docs/RENDER_ALGORITHMS.md is missing or lost its MATH-CRITICAL markers. The canonical coordinate transforms would be unrecoverable after compaction. Restore the file (git checkout docs/RENDER_ALGORITHMS.md) and retry."
 
-# Extract only the fenced "MATH-CRITICAL" block(s) — the whole file is too large to
-# re-inject on every compaction.
 BODY="$(awk '
-  /<!-- MATH-CRITICAL:BEGIN -->/ { keep=1; next }
-  /<!-- MATH-CRITICAL:END -->/   { keep=0; next }
+  /MATH-CRITICAL:BEGIN/ { keep=1; next }
+  /MATH-CRITICAL:END/   { keep=0; next }
   keep { print }
 ' "$MATH_FILE")"
 
-if [[ -z "${BODY// }" ]]; then
-  BODY="$(head -c 4000 "$MATH_FILE")"
-fi
+[[ -n "${BODY// }" ]] || \
+  block "Compaction aborted: the MATH-CRITICAL block in docs/RENDER_ALGORITHMS.md is empty."
 
-emit "PRESERVED ACROSS COMPACTION — canonical coordinate transforms (verbatim from docs/RENDER_ALGORITHMS.md). These equations are normative; do not paraphrase, re-derive, or 'simplify' them:
+mkdir -p "$(dirname "$SNAPSHOT")"
+{
+  echo "<!-- Auto-staged by PreCompact at $(date -u +%FT%TZ). Do not edit; source of truth is docs/RENDER_ALGORITHMS.md. -->"
+  printf '%s\n' "$BODY"
+} > "$SNAPSHOT"
 
-$BODY"
 exit 0

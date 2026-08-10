@@ -165,7 +165,23 @@ guarantees candles never touch.
 2A and 2B share only `src/data/types.ts`, which is written first and frozen before either
 starts — that is the entire merge surface between the two worktrees.
 
-## 6. Non-goals (v1)
+## 6. Context-engineering layer (how the hooks actually work)
+
+Recorded here because it is easy to get wrong and expensive to rediscover.
+
+| Hook | Event | What it does | Why this event |
+| --- | --- | --- | --- |
+| `sessionstart-inject-math.sh` | `SessionStart` (`startup\|clear\|compact`) | Emits the MATH-CRITICAL block as `hookSpecificOutput.additionalContext` | **This is the one that preserves the math.** SessionStart supports `additionalContext` and its `compact` matcher fires right after a compaction. |
+| `precompact-preserve-math.sh` | `PreCompact` | Verifies the math doc + markers exist, stages `.claude/.math-snapshot.md`, exits 2 to abort compaction if the math would be lost | **PreCompact cannot inject context** — it supports only `decision: "block"` / exit 2. A PreCompact hook that returns `additionalContext` is silently ignored. |
+| `guard-dom-in-renderer.sh` | `PreToolUse` (Edit/Write/MultiEdit) | Exit 2 blocks writes containing DOM-construction APIs under `src/renderer` | PreToolUse exit 2 blocks the call; stderr goes back to Claude. |
+| `check-silent.sh` | `PostToolUse` (Edit/Write/MultiEdit) | ESLint (`--format json`, rendered terse) + `tsc --noEmit`; silent on success, ≤40 lines on failure | PostToolUse exit 2 cannot block (the write already happened) but does surface stderr. |
+
+Two traps worth remembering: ESLint 9 removed the `unix` and `compact` formatters from
+core, so the hook uses `--format json` and renders the lines itself; and the enforcement
+is doubled at rest — the same DOM ban exists as an ESLint `no-restricted-syntax` rule, so
+it still holds for anyone editing without Claude Code.
+
+## 7. Non-goals (v1)
 
 Order entry, broker connectivity, replay mode, multi-pane layouts, saved templates,
 server-side indicator computation.

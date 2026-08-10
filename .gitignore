@@ -12,3 +12,4 @@ tests/visual/**/*-diff.png
 test-results/
 playwright-report/
 .claude/settings.local.json
+.claude/.math-snapshot.md
