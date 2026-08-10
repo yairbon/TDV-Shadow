@@ -1,0 +1,11 @@
+{
+  "name": "tdv-shadow",
+  "version": "0.1.0",
+  "description": "Charting workbench plugin for TDV-Shadow: canvas rendering skill, math-preserving compaction hooks, and silent lint/type gates.",
+  "author": {
+    "name": "TDV-Shadow"
+  },
+  "keywords": ["charting", "canvas", "webgl", "websocket", "trading"],
+  "skills": "./skills",
+  "hooks": "./.claude-plugin/hooks.json"
+}

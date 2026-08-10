@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+tests/visual/**/*-actual.png
+tests/visual/**/*-diff.png
+test-results/
+playwright-report/
+.claude/settings.local.json
