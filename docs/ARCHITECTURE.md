@@ -91,6 +91,29 @@ interface Series {
 Invariants: `bars[i].t < bars[i+1].t`; `l <= min(o,c)` and `h >= max(o,c)`; `v >= 0`.
 Violations are dropped at the codec boundary and counted, never thrown into the render path.
 
+### 3.1.1 Snapshot semantics — the one thing to get right
+
+`Series.bars` is a single append-only array shared by reference. `snapshot()` returns an
+O(1) frozen wrapper around the existing `Series`; **it does not copy the bars array**.
+Copying 5,000 bars per frame would consume the entire 8ms budget before a candle is drawn.
+
+What that means in practice:
+
+- A `Snapshot`'s scalar fields are immutable. `snapshot.series.bars` is **live**: its
+  `length` can grow and its last element can be swapped after the snapshot was taken.
+- This is safe *within* a frame. JavaScript is single-threaded, so a WebSocket handler
+  cannot preempt a synchronous rAF draw pass. Consume a snapshot inside the frame that
+  took it — mandate #3's model already requires this.
+- **Never hold a snapshot across frames and diff it against a newer one.** The older
+  snapshot's array has already mutated underneath you, so comparing `bars.length` or the
+  last bar silently reports "no change" when there was one. Change detection uses the
+  monotonic `revision` counter (`SnapshotSource.hasChangedSince`), never array identity.
+- Never `await` between taking a snapshot and completing the draw.
+
+Bar *objects* remain frozen and are never mutated — mandate #4 permits exactly one
+in-place-looking operation, replacing the last bar with a new frozen object, which is what
+`replaceLast` does.
+
 ### 3.2 Wire format (WebSocket)
 
 ```jsonc
