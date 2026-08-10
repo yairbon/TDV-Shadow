@@ -13,3 +13,7 @@ test-results/
 playwright-report/
 .claude/settings.local.json
 .claude/.math-snapshot.md
+
+# Subagent git worktrees (isolated checkouts, each with its own node_modules).
+# These are transient agent workspaces, never project history.
+.claude/worktrees/
