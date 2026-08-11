@@ -272,6 +272,7 @@ test.describe('context menus', () => {
     await rightClick(page, placed.anchorPixels[0]);
 
     expect(await menuLabels(page)).toEqual([
+      'Settings',
       'Clone',
       'Lock',
       'Bring to front',

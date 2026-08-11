@@ -19,6 +19,7 @@ import { clearWorkspace, loadWorkspace, saveWorkspace, type Workspace } from './
 import { createHistory, type HistoryState } from './app/history.js';
 import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
+import { createDrawingDialog } from './ui/drawingDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
@@ -867,6 +868,13 @@ window.addEventListener('pointerup', () => {
 container.addEventListener('dblclick', (event) => {
   if (chart === null) return;
   const rect = container.getBoundingClientRect();
+  // A drawing under the cursor wins: double-clicking a trendline must open its style
+  // editor, not reset the scale it happens to be drawn on.
+  const hit = chart.hitTestAt(event.clientX - rect.left, event.clientY - rect.top);
+  if (hit !== null) {
+    openDrawingSettings(hit.id);
+    return;
+  }
   const axis = axisAt(event.clientX - rect.left, event.clientY - rect.top);
   if (axis === 'price') chart.resetPriceZoom();
   else chart.fitAll();
@@ -1122,6 +1130,32 @@ container.addEventListener('pointermove', (event) => {
   container.style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
 });
 
+// ---------------------------------------------------------------- drawing style
+
+const drawingDialog = createDrawingDialog();
+
+/** Opens the style editor for one drawing. Undo is captured once, on open. */
+function openDrawingSettings(id: string): void {
+  const active = currentChart();
+  const drawing = active?.drawings.get(id) ?? null;
+  if (active === null || drawing === null) return;
+
+  capture();
+  drawingDialog.open({
+    id,
+    label: TOOL_DEFINITIONS[drawing.kind].label,
+    style: drawing.style,
+    onApply: (style) => {
+      currentChart()?.drawings.update(id, { style });
+      status();
+    },
+    onCancel: (style) => {
+      currentChart()?.drawings.update(id, { style });
+      status();
+    },
+  });
+}
+
 // ---------------------------------------------------------------- context menus
 
 /**
@@ -1141,6 +1175,12 @@ function drawingMenu(active: Chart, id: string): MenuEntry[] {
     status();
   };
   return [
+    {
+      label: 'Settings',
+      onSelect: () => {
+        openDrawingSettings(id);
+      },
+    },
     {
       label: 'Clone',
       onSelect: () => {

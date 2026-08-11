@@ -28,6 +28,20 @@ export function resolveToken(theme: Theme, token: string): string {
   return table[token] ?? theme.overlayLine;
 }
 
+/**
+ * Drawing colour tokens. Separate from `resolveToken`, which serves indicator plots: a
+ * drawing's palette is about standing out ON the chart, not about matching a series.
+ */
+export function resolveDrawingToken(theme: Theme, token: string): string {
+  const table: Record<string, string | undefined> = {
+    'drawing.primary': theme.overlayLine,
+    'drawing.up': theme.upBody,
+    'drawing.down': theme.downBody,
+    'drawing.neutral': theme.axisText,
+  };
+  return table[token] ?? theme.overlayLine;
+}
+
 export interface PlotScale {
   y(value: number): number;
 }
@@ -251,9 +265,16 @@ export function drawDrawings(
   for (const geometry of geometries) {
     if (!geometry.complete) continue;
     const selected = geometry.id === selectedId;
-    ctx.strokeStyle = selected ? theme.crosshairLine : theme.overlayLine;
-    ctx.fillStyle = ctx.strokeStyle;
-    ctx.lineWidth = selected ? 2 : 1.5;
+    const style = geometry.style;
+    // The drawing's own colour survives selection: a red trendline that turns grey the
+    // moment you click it is worse feedback than no feedback. Selection reads as a
+    // thicker line plus larger handles instead.
+    const color = style.color ?? resolveDrawingToken(theme, style.colorToken);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = style.lineWidth + (selected ? 1 : 0.5);
+    ctx.globalAlpha = style.opacity;
+    ctx.setLineDash([...style.dash]);
 
     for (const segment of geometry.segments) {
       ctx.beginPath();
@@ -263,14 +284,14 @@ export function drawDrawings(
     }
 
     if (geometry.box !== null) {
-      ctx.globalAlpha = 0.12;
+      ctx.globalAlpha = style.opacity * 0.12;
       ctx.fillRect(
         snapFill(geometry.box.x0),
         snapFill(geometry.box.y0),
         Math.max(1, snapFill(geometry.box.x1) - snapFill(geometry.box.x0)),
         Math.max(1, snapFill(geometry.box.y1) - snapFill(geometry.box.y0)),
       );
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = style.opacity;
       ctx.strokeRect(
         snapLine(geometry.box.x0),
         snapLine(geometry.box.y0),
@@ -279,20 +300,28 @@ export function drawDrawings(
       );
     }
 
-    ctx.fillStyle = theme.axisText;
-    for (const level of geometry.levels) {
-      ctx.fillText(level.label, plot.left + 6, snapLine(level.y) - 7);
-    }
-    for (const label of geometry.labels) {
-      ctx.fillText(label.text, label.x + 6, label.y);
+    ctx.setLineDash([]);
+
+    if (style.showLabels) {
+      ctx.fillStyle = theme.axisText;
+      for (const level of geometry.levels) {
+        ctx.fillText(level.label, plot.left + 6, snapLine(level.y) - 7);
+      }
+      for (const label of geometry.labels) {
+        ctx.fillText(label.text, label.x + 6, label.y);
+      }
     }
 
-    // Anchor handles, so it is obvious what can be grabbed.
-    ctx.fillStyle = selected ? theme.crosshairLine : theme.overlayLine;
+    // Anchor handles, so it is obvious what can be grabbed. Handles are never dashed or
+    // faded — they are chrome for the selection, not part of the drawing.
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = selected ? theme.crosshairLine : color;
+    const half = selected ? 4 : 2;
     for (const point of geometry.points) {
-      ctx.fillRect(snapFill(point.x) - 2, snapFill(point.y) - 2, 5, 5);
+      ctx.fillRect(snapFill(point.x) - half, snapFill(point.y) - half, half * 2 + 1, half * 2 + 1);
     }
   }
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 

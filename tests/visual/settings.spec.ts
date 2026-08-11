@@ -249,3 +249,189 @@ test.describe('indicator settings', () => {
     expect(restored[0].params['period']).toBe(33);
   });
 });
+
+// ------------------------------------------------------------------ 8.2 drawing style
+
+interface DrawingHandle {
+  readonly id: string;
+  readonly anchorPixels: readonly { readonly x: number; readonly y: number }[];
+}
+
+/**
+ * Anchors are taken from the SERIES, not hard-coded: the default symbol and AAPL live in
+ * completely different price ranges, and a literal 260 puts the line off-screen on one of
+ * them — where a double-click can never hit it.
+ */
+async function placeTrendline(page: Page): Promise<DrawingHandle> {
+  await page.evaluate(() => {
+    const win = window as {
+      __tdv?: { drawShape: (k: string, a: unknown[], m: string) => unknown };
+      __chart?: { series: { get: () => { bars: readonly { c: number }[] } } };
+    };
+    const bars = win.__chart?.series.get().bars ?? [];
+    if (bars.length < 80) throw new Error('not enough bars to anchor against');
+    win.__tdv?.drawShape(
+      'trendline',
+      [
+        { barIndex: 20, price: bars[20].c },
+        { barIndex: 70, price: bars[70].c },
+      ],
+      'off',
+    );
+  });
+  await page.waitForTimeout(200);
+  return (await page.evaluate(() => {
+    const api = (window as { __tdv?: { listDrawings: () => unknown } }).__tdv;
+    return (api === undefined ? [] : api.listDrawings()) as DrawingHandle[];
+  }))[0];
+}
+
+const styleOf = (page: Page, id: string): Promise<Record<string, unknown>> =>
+  page.evaluate((wanted) => {
+    const chart = (window as {
+      __chart?: { drawings: { get: (i: string) => { style: unknown } | null } };
+    }).__chart;
+    return (chart?.drawings.get(wanted)?.style ?? {}) as Record<string, unknown>;
+  }, id);
+
+/** Counts strongly-red pixels on the overlay layer. */
+const redPixels = (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>('#chart canvas[data-layer="overlay"]');
+    const ctx = canvas?.getContext('2d') ?? null;
+    if (canvas === null || ctx === null) return 0;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 200 && data[i + 1] < 60 && data[i + 2] < 60 && data[i + 3] > 128) count++;
+    }
+    return count;
+  });
+
+async function openDrawingSettings(page: Page, handle: DrawingHandle): Promise<void> {
+  const box = await page.evaluate(() => {
+    const host = document.querySelector('#chart');
+    if (host === null) return { x: 0, y: 0 };
+    const rect = host.getBoundingClientRect();
+    return { x: rect.left, y: rect.top };
+  });
+  await page.mouse.dblclick(handle.anchorPixels[0].x + box.x, handle.anchorPixels[0].y + box.y);
+  await page.waitForSelector('#drawing-settings[open]');
+}
+
+test.describe('drawing style', () => {
+  test('the style block was previously stored and never painted — colour now reaches the canvas', async ({
+    page,
+  }) => {
+    await open(page);
+    const placed = await placeTrendline(page);
+    const before = await redPixels(page);
+
+    await openDrawingSettings(page, placed);
+    await page.fill('#drawing-color', '#ff0000');
+    await page.waitForTimeout(250);
+    expect(await redPixels(page)).toBeGreaterThan(before + 20);
+
+    await page.click('#drawing-ok');
+    await page.waitForTimeout(150);
+    expect(await styleOf(page, placed.id)).toMatchObject({ color: '#ff0000' });
+  });
+
+  test('width, dash, opacity and label visibility all persist to the store', async ({ page }) => {
+    await open(page);
+    const placed = await placeTrendline(page);
+    await openDrawingSettings(page, placed);
+
+    await page.fill('#drawing-width', '4');
+    await page.selectOption('#drawing-dash', 'Dashed');
+    await page.fill('#drawing-opacity', '0.5');
+    await page.uncheck('#drawing-labels');
+    await page.waitForTimeout(200);
+    await page.click('#drawing-ok');
+    await page.waitForTimeout(150);
+
+    const style = await styleOf(page, placed.id);
+    expect(style['lineWidth']).toBe(4);
+    expect(style['dash']).toEqual([6, 4]);
+    expect(style['opacity']).toBe(0.5);
+    expect(style['showLabels']).toBe(false);
+  });
+
+  test('a wider line paints more ink', async ({ page }) => {
+    // Storing lineWidth proves plumbing; this proves drawDrawings reads it.
+    await open(page);
+    const placed = await placeTrendline(page);
+    const ink = (): Promise<number> =>
+      page.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '#chart canvas[data-layer="overlay"]',
+        );
+        const ctx = canvas?.getContext('2d') ?? null;
+        if (canvas === null || ctx === null) return 0;
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let count = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 128) count++;
+        return count;
+      });
+
+    const thin = await ink();
+    await openDrawingSettings(page, placed);
+    await page.fill('#drawing-width', '8');
+    await page.waitForTimeout(250);
+    expect(await ink()).toBeGreaterThan(thin);
+  });
+
+  test('Cancel restores the whole style block', async ({ page }) => {
+    await open(page);
+    const placed = await placeTrendline(page);
+    const before = await styleOf(page, placed.id);
+
+    await openDrawingSettings(page, placed);
+    await page.fill('#drawing-width', '6');
+    await page.fill('#drawing-color', '#00ff00');
+    await page.waitForTimeout(200);
+    await page.click('#drawing-cancel');
+    await page.waitForTimeout(200);
+
+    expect(await styleOf(page, placed.id)).toEqual(before);
+  });
+
+  test('the context menu opens the same editor', async ({ page }) => {
+    await open(page);
+    const placed = await placeTrendline(page);
+    const box = await page.evaluate(() => {
+      const host = document.querySelector('#chart');
+      if (host === null) return { x: 0, y: 0 };
+      const rect = host.getBoundingClientRect();
+      return { x: rect.left, y: rect.top };
+    });
+    await page.mouse.click(placed.anchorPixels[0].x + box.x, placed.anchorPixels[0].y + box.y, {
+      button: 'right',
+    });
+    await page.waitForSelector('#context-menu [data-label="Settings"]');
+    await page.click('#context-menu [data-label="Settings"]');
+    await page.waitForSelector('#drawing-settings[open]');
+  });
+
+  test('style survives a reload', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.evaluate(() => {
+      localStorage.clear();
+    });
+    const placed = await placeTrendline(page);
+    await openDrawingSettings(page, placed);
+    await page.fill('#drawing-color', '#ff00ff');
+    await page.fill('#drawing-width', '3');
+    await page.waitForTimeout(200);
+    await page.click('#drawing-ok');
+    await page.waitForTimeout(900);
+
+    await page.reload();
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.waitForTimeout(400);
+    const restored = await styleOf(page, placed.id);
+    expect(restored['color']).toBe('#ff00ff');
+    expect(restored['lineWidth']).toBe(3);
+  });
+});

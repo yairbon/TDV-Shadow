@@ -52,6 +52,15 @@ export type MagnetTarget = 'open' | 'high' | 'low' | 'close' | null;
 
 export interface DrawingStyle {
   readonly colorToken: string;
+  /**
+   * Explicit CSS colour chosen by the user. Wins over `colorToken` when present.
+   *
+   * Additive to the contract rather than a redefinition: a drawing without it resolves
+   * through `colorToken` exactly as before, so every saved drawing and every test that
+   * predates the style editor is unaffected. It exists because a token set can only offer
+   * the theme's colours, and picking any colour is the whole point of a style editor.
+   */
+  readonly color?: string;
   readonly lineWidth: number;
   readonly dash: readonly number[];
   readonly opacity: number;

@@ -60,6 +60,12 @@ export interface Level {
 export interface DrawingGeometry {
   readonly id: string;
   readonly kind: Drawing['kind'];
+  /**
+   * Carried through from the drawing so the renderer can honour it. Before this the
+   * whole `DrawingStyle` block — colour, width, dash, opacity, labels — was stored,
+   * serialised and never read by anything that paints.
+   */
+  readonly style: Drawing['style'];
   /** False when fewer anchors than the tool needs have been placed. */
   readonly complete: boolean;
   readonly segments: readonly Segment[];
@@ -99,6 +105,7 @@ function extendToEdge(a: Point, b: Point, plot: PlotBox): Point {
 const empty = (drawing: Drawing, complete: boolean): DrawingGeometry => ({
   id: drawing.id,
   kind: drawing.kind,
+  style: drawing.style,
   complete,
   segments: [],
   levels: [],
@@ -122,7 +129,7 @@ export function buildGeometry(
   if (drawing.anchors.length < needed) return empty(drawing, false);
 
   const points = drawing.anchors.map((a) => projectAnchor(a, price, time));
-  const base = { id: drawing.id, kind: drawing.kind, complete: true } as const;
+  const base = { id: drawing.id, kind: drawing.kind, style: drawing.style, complete: true } as const;
   const p0 = points[0];
   const p1 = points.length > 1 ? points[1] : p0;
   const right = plot.left + plot.width;
