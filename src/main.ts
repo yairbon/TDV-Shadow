@@ -16,6 +16,7 @@ import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { fetchDailySeries } from './app/liveData.js';
 import { installControlApi } from './app/control.js';
 import { clearWorkspace, loadWorkspace, saveWorkspace } from './app/workspace.js';
+import { createHistory, type HistoryState } from './app/history.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
@@ -218,7 +219,10 @@ legend?.addEventListener('click', (event) => {
   const handle = target.closest('[data-handle]');
   if (!(handle instanceof HTMLElement)) return;
   const id = handle.dataset['handle'];
-  if (id !== undefined) chart?.removeIndicator(id);
+  if (id !== undefined) {
+    capture();
+    chart?.removeIndicator(id);
+  }
   renderLegend(null);
 });
 
@@ -448,6 +452,7 @@ if (indicatorSelect !== null) {
 el('#indicator-add')?.addEventListener('click', () => {
   const id = indicatorSelect?.value;
   if (id === undefined) return;
+  capture();
   chart?.addIndicator(id as (typeof INDICATOR_IDS)[number]);
   renderLegend(null);
   status();
@@ -550,6 +555,7 @@ if (rail !== null) {
   eraseButton.setAttribute('aria-label', eraseButton.title);
   eraseButton.innerHTML = icon('erase');
   eraseButton.addEventListener('click', () => {
+    capture();
     chart?.drawings.clear();
     pending = [];
     status();
@@ -596,6 +602,7 @@ container.addEventListener('click', (event) => {
   pending = [...pending, snapped.anchor];
 
   if (pending.length >= TOOL_DEFINITIONS[activeTool as DrawingKind].anchorCount) {
+    capture();
     chart.drawings.add(activeTool as DrawingKind, pending);
     pending = [];
   }
@@ -865,4 +872,234 @@ el('#theme-toggle')?.addEventListener('click', () => {
   const view = chart?.view.get();
   build(view?.scrollPosition, view?.barSpacing);
   persist();
+});
+
+// ---------------------------------------------------------------- history
+
+const history = createHistory();
+
+function snapshotState(): HistoryState | null {
+  const active = currentChart();
+  if (active === null) return null;
+  return {
+    drawings: active.drawings.toJSON(),
+    indicators: active.listIndicators().map((i) => ({ id: i.id, params: i.params })),
+  };
+}
+
+/** Records the state BEFORE a mutation. Call it first, never after. */
+function capture(): void {
+  const state = snapshotState();
+  if (state !== null) history.capture(state);
+}
+
+function applyState(state: HistoryState): void {
+  const active = currentChart();
+  if (active === null) return;
+  active.drawings.loadJSON(state.drawings);
+  for (const existing of active.listIndicators()) active.removeIndicator(existing.handleId);
+  for (const entry of state.indicators) active.addIndicator(entry.id, entry.params);
+  renderLegend(null);
+  status();
+}
+
+function undo(): void {
+  const current = snapshotState();
+  if (current === null) return;
+  const previous = history.undo(current);
+  if (previous !== null) applyState(previous);
+}
+
+function redo(): void {
+  const current = snapshotState();
+  if (current === null) return;
+  const next = history.redo(current);
+  if (next !== null) applyState(next);
+}
+
+// ---------------------------------------------------------------- selection & drag
+
+interface DragState {
+  readonly id: string;
+  /** -1 when the body was grabbed rather than a specific anchor. */
+  readonly anchorIndex: number;
+  readonly startAnchors: readonly { barIndex: number; price: number }[];
+  readonly startX: number;
+  readonly startY: number;
+  moved: boolean;
+}
+
+let drag: DragState | null = null;
+
+function localPoint(event: PointerEvent | MouseEvent): { x: number; y: number } {
+  const rect = container.getBoundingClientRect();
+  return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+}
+
+/**
+ * Selection and dragging run in the CAPTURE phase and stop propagation on a hit, so the
+ * pan handler never sees the gesture. Without that the chart would pan while the shape
+ * moves, and both would be wrong.
+ */
+container.addEventListener(
+  'pointerdown',
+  (event) => {
+    const active = currentChart();
+    if (active === null || activeTool !== '') return;
+    const point = localPoint(event);
+    const hit = active.hitTestAt(point.x, point.y);
+    if (hit === null) {
+      if (active.drawings.selected() !== null) {
+        active.drawings.select(null);
+        status();
+      }
+      return;
+    }
+
+    const drawing = active.drawings.get(hit.id);
+    if (drawing === null || drawing.locked) return;
+
+    active.drawings.select(hit.id);
+    capture();
+    drag = {
+      id: hit.id,
+      anchorIndex: hit.anchorIndex,
+      startAnchors: drawing.anchors.map((a) => ({ barIndex: a.barIndex, price: a.price })),
+      startX: point.x,
+      startY: point.y,
+      moved: false,
+    };
+    event.stopPropagation();
+    event.preventDefault();
+    status();
+  },
+  true,
+);
+
+window.addEventListener('pointermove', (event) => {
+  const state = drag;
+  const active = currentChart();
+  if (state === null || active === null) return;
+  const point = localPoint(event);
+  if (Math.hypot(point.x - state.startX, point.y - state.startY) > 2) state.moved = true;
+
+  // Dragging works in DATA space: convert both the grab point and the cursor, then apply
+  // the delta to the stored anchors. Moving pixels and converting once at the end would
+  // drift as soon as the scale is non-linear.
+  const from = active.pickAnchor(state.startX, state.startY, 'off').anchor;
+  const to = active.pickAnchor(point.x, point.y, magnet).anchor;
+
+  if (state.anchorIndex >= 0) {
+    const next = state.startAnchors.map((anchor, i) =>
+      i === state.anchorIndex ? { barIndex: to.barIndex, price: to.price } : anchor,
+    );
+    active.drawings.update(state.id, { anchors: next });
+    return;
+  }
+
+  const dIndex = to.barIndex - from.barIndex;
+  const dPrice = to.price - from.price;
+  active.drawings.update(state.id, {
+    anchors: state.startAnchors.map((a) => ({
+      barIndex: a.barIndex + dIndex,
+      price: a.price + dPrice,
+    })),
+  });
+});
+
+window.addEventListener('pointerup', () => {
+  drag = null;
+});
+
+// Cursor feedback: a shape under the pointer should look grabbable.
+container.addEventListener('pointermove', (event) => {
+  const active = currentChart();
+  if (active === null || drag !== null) return;
+  if (activeTool !== '') {
+    container.style.cursor = 'crosshair';
+    return;
+  }
+  const point = localPoint(event);
+  container.style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
+});
+
+// ---------------------------------------------------------------- shortcuts
+
+const TOOL_KEYS: Readonly<Record<string, DrawingKind>> = {
+  t: 'trendline',
+  h: 'horizontal-line',
+  v: 'vertical-line',
+  r: 'rectangle',
+  f: 'fib-retracement',
+};
+
+function selectTool(kind: string): void {
+  activeTool = kind;
+  pending = [];
+  const rail = el('#tool-rail');
+  for (const button of rail?.querySelectorAll('button[data-tool]') ?? []) {
+    button.setAttribute('aria-pressed', String((button as HTMLElement).dataset['tool'] === kind));
+  }
+  status();
+}
+
+document.addEventListener('keydown', (event) => {
+  const target = event.target;
+  // Never steal keys from a text field — Delete in the search box must delete text.
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return;
+
+  const active = currentChart();
+  const meta = event.metaKey || event.ctrlKey;
+
+  if (meta && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    if (event.shiftKey) redo();
+    else undo();
+    return;
+  }
+  if (meta && event.key.toLowerCase() === 'y') {
+    event.preventDefault();
+    redo();
+    return;
+  }
+  if (event.key === 'Escape') {
+    if (pending.length > 0) {
+      pending = [];
+      status();
+    } else {
+      selectTool('');
+      active?.drawings.select(null);
+    }
+    return;
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    const id = active?.drawings.selected();
+    if (id !== undefined && id !== null) {
+      event.preventDefault();
+      capture();
+      active?.drawings.remove(id);
+      status();
+    }
+    return;
+  }
+  if (event.key.toLowerCase() === 'm' && !meta) {
+    magnet = magnet === 'off' ? 'strong' : 'off';
+    const magnetButton = el('#tool-rail button[title^="Magnet"]');
+    magnetButton?.setAttribute('aria-pressed', String(magnet !== 'off'));
+    status();
+    return;
+  }
+  if (event.key === 'Home') {
+    active?.scrollToRealtime();
+    return;
+  }
+  if (event.altKey) {
+    // `in` rather than an undefined check: with noUncheckedIndexedAccess off the index
+    // type is DrawingKind, so a null test is dead per types while live at runtime.
+    const key = event.key.toLowerCase();
+    if (key in TOOL_KEYS) {
+      event.preventDefault();
+      selectTool(TOOL_KEYS[key]);
+    }
+  }
 });

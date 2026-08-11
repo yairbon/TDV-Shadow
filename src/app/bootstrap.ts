@@ -28,6 +28,7 @@ import {
   drawWatermark,
 } from '../renderer/layers/annotationsLayer.js';
 import { buildGeometry, type DrawingGeometry } from '../drawings/geometry.js';
+import { hitTest, type Hit } from '../drawings/hitTest.js';
 import { snapPixel, type SnapResult } from '../drawings/magnet.js';
 import type { Anchor, MagnetMode } from '../drawings/types.js';
 import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
@@ -107,6 +108,11 @@ export interface Chart {
   listIndicators(): readonly ActiveIndicator[];
   /** Geometry of every drawing in the last frame — used for anchor verification. */
   drawingGeometry(): readonly DrawingGeometry[];
+  /**
+   * Hit-tests the drawings against the LAST PAINTED geometry. Pixels, because "near the
+   * cursor" is a pixel notion — a price tolerance feels tight zoomed out and loose in.
+   */
+  hitTestAt(x: number, y: number, tolerance?: number): Hit | null;
   /** Indicator readouts at a bar, for the legend. */
   indicatorValuesAt(index: number): readonly {
     readonly handleId: string;
@@ -526,6 +532,10 @@ export function createChart(o: ChartOptions): Chart {
     },
     listIndicators: () => features.indicators,
     drawingGeometry: () => lastGeometry,
+    hitTestAt(x, y, tolerance = 7) {
+      const hits = hitTest({ x, y }, lastGeometry, tolerance);
+      return hits.length === 0 ? null : hits[0];
+    },
     indicatorValuesAt(index) {
       const input = lastInput;
       if (input === null) return [];
