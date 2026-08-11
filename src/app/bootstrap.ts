@@ -13,6 +13,7 @@ import { createViewStore, type ViewStore } from '../data/store/viewStore.js';
 import { asBarIndex, asPixel, asPrice, type Bar, type PriceScaleMode, type Timeframe } from '../data/types.js';
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
+import { makePriceRange } from '../renderer/scale/priceScale.js';
 import { computeLayout, type Layout, type Rect } from '../renderer/layout.js';
 import { candleGeometry } from '../renderer/scale/timeScale.js';
 import { maxVolume } from '../renderer/scale/volumeScale.js';
@@ -24,6 +25,7 @@ import {
   drawIndicatorPane,
   drawLastPrice,
   drawVolumeProfile,
+  drawWatermark,
 } from '../renderer/layers/annotationsLayer.js';
 import { buildGeometry, type DrawingGeometry } from '../drawings/geometry.js';
 import { snapPixel, type SnapResult } from '../drawings/magnet.js';
@@ -95,6 +97,21 @@ export interface Chart {
   listIndicators(): readonly ActiveIndicator[];
   /** Geometry of every drawing in the last frame — used for anchor verification. */
   drawingGeometry(): readonly DrawingGeometry[];
+  /** Indicator readouts at a bar, for the legend. */
+  indicatorValuesAt(index: number): readonly {
+    readonly handleId: string;
+    readonly label: string;
+    readonly values: readonly { readonly key: string; readonly value: number }[];
+  }[];
+  /** Vertical price-axis zoom: >1 compresses the range, <1 expands it. */
+  setPriceZoom(factor: number): void;
+  priceZoom(): number;
+  resetPriceZoom(): void;
+  /** True when the view has been scrolled away from the newest bar. */
+  isScrolledBack(): boolean;
+  scrollToRealtime(): void;
+  /** Re-fits the whole series to the pane. */
+  fitAll(): void;
   /** CSS pixel (relative to the container) -> data-space anchor, with optional magnet. */
   pickAnchor(x: number, y: number, magnet?: MagnetMode): SnapResult;
   /** Data-space anchor -> CSS pixel, through the live scales. */
@@ -142,6 +159,7 @@ export function createChart(o: ChartOptions): Chart {
   const indicatorMemo = createIndicatorMemo();
   let handleCounter = 0;
   let lastGeometry: readonly DrawingGeometry[] = [];
+  let priceZoom = 1;
 
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
@@ -314,7 +332,7 @@ export function createChart(o: ChartOptions): Chart {
 
   // --- the single draw entrypoint ----------------------------------------
   const frame = (mask: DirtyMask): void => {
-    const input = buildFrameInput({
+    let input = buildFrameInput({
       snapshot: snapshots.snapshot(),
       layout,
       theme,
@@ -324,6 +342,24 @@ export function createChart(o: ChartOptions): Chart {
       priceRange: null,
       autoscaleCache,
     });
+
+    // A dragged price axis scales the AUTOSCALED range around its own centre rather than
+    // introducing a second source of truth for the range. Only rebuilt when actually
+    // zoomed, so the common path still costs one buildFrameInput.
+    if (priceZoom !== 1) {
+      const centre = (input.priceScale.min + input.priceScale.max) / 2;
+      const half = ((input.priceScale.max - input.priceScale.min) / 2) * priceZoom;
+      input = buildFrameInput({
+        snapshot: input.snapshot,
+        layout,
+        theme,
+        pricePrecision: o.pricePrecision ?? 2,
+        overlays: [],
+        pointer: pointer.pointer(),
+        priceRange: makePriceRange(centre - half, centre + half),
+        autoscaleCache,
+      });
+    }
     const snapshot = input.snapshot;
     const bars = snapshot.series.bars;
     const derived = seriesMemo(snapshot.revision, features.chartType, features.chartParams, bars);
@@ -352,6 +388,9 @@ export function createChart(o: ChartOptions): Chart {
       });
     }
 
+    if ((mask & DirtyFlags.Grid) !== 0) {
+      drawWatermark(surfaces.grid.ctx, o.symbol, o.tf, input.layout.plot, theme);
+    }
     drawAnnotations(input, mask);
     lastInput = input;
     frameCount += 1;
@@ -444,6 +483,59 @@ export function createChart(o: ChartOptions): Chart {
     },
     listIndicators: () => features.indicators,
     drawingGeometry: () => lastGeometry,
+    indicatorValuesAt(index) {
+      const input = lastInput;
+      if (input === null) return [];
+      const bars = input.snapshot.series.bars;
+      const i = Math.min(bars.length - 1, Math.max(0, Math.round(index)));
+      return features.indicators.map((indicator) => {
+        const result = indicatorMemo(
+          indicator.handleId,
+          input.snapshot.revision,
+          indicator.id,
+          indicator.params,
+          bars,
+        );
+        return {
+          handleId: indicator.handleId,
+          label: `${indicator.id.toUpperCase()}${
+            indicator.params.period === undefined ? '' : ` ${String(indicator.params.period)}`
+          }`,
+          values: result.plots.map((plot) => ({
+            key: plot.key,
+            value: result.values[plot.key][i],
+          })),
+        };
+      });
+    },
+    setPriceZoom(factor) {
+      const next = Math.min(6, Math.max(0.2, factor));
+      if (next === priceZoom) return;
+      priceZoom = next;
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    priceZoom: () => priceZoom,
+    resetPriceZoom() {
+      if (priceZoom === 1) return;
+      priceZoom = 1;
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    isScrolledBack() {
+      const count = series.get().bars.length;
+      return view.get().scrollPosition < count - 1 - 0.5;
+    },
+    scrollToRealtime() {
+      view.setScrollPosition(series.get().bars.length - 1 + 2);
+    },
+    fitAll() {
+      const count = series.get().bars.length;
+      if (count < 2) return;
+      const width = layout.plot.width;
+      view.update({
+        barSpacing: Math.min(120, Math.max(1.5, (width * 0.92) / count)),
+        scrollPosition: count - 1 + 2,
+      });
+    },
     pickAnchor(x, y, magnet = 'off') {
       const input = lastInput;
       if (input === null) {

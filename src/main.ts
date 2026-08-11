@@ -157,10 +157,23 @@ function renderLegend(index: number | null): void {
   const cell = (label: string, value: number): string =>
     `${label}<b class="${direction}">${fmt(value)}</b>`;
 
-  const indicators = chart
-    .listIndicators()
-    .map((entry) => entry.id.toUpperCase())
-    .join(' · ');
+  // One row per indicator with its value AT THE CURSOR and a remove control — the
+  // readout a trader actually uses, rather than a list of names.
+  const rows = chart
+    .indicatorValuesAt(i)
+    .map((entry) => {
+      const readout = entry.values
+        .filter((v) => !Number.isNaN(v.value))
+        .map((v) => fmt(v.value))
+        .join(' ');
+      return (
+        `<div class="row ind" data-handle="${entry.handleId}">` +
+        `<span>${entry.label}</span><span>${readout}</span>` +
+        `<button type="button" title="Remove ${entry.label}" aria-label="Remove ${entry.label}">×</button>` +
+        `</div>`
+      );
+    })
+    .join('');
 
   legend.innerHTML =
     `<div class="title">${symbol} <span class="muted">· ${tf} · ${
@@ -170,7 +183,7 @@ function renderLegend(index: number | null): void {
     `<b class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${change.toFixed(2)} (${
       percent >= 0 ? '+' : ''
     }${percent.toFixed(2)}%)</b></div>` +
-    (indicators === '' ? '' : `<div class="ind">${indicators}</div>`);
+    rows;
 
   status();
   const changeBadge = el('#symbol-change');
@@ -179,6 +192,16 @@ function renderLegend(index: number | null): void {
     changeBadge.className = percent >= 0 ? 'up' : 'down';
   }
 }
+
+legend?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) return;
+  const handle = target.closest('[data-handle]');
+  if (!(handle instanceof HTMLElement)) return;
+  const id = handle.dataset['handle'];
+  if (id !== undefined) chart?.removeIndicator(id);
+  renderLegend(null);
+});
 
 // The legend follows the crosshair. This only reads state and writes text, so it stays
 // clear of the draw loop (mandate #3).
@@ -569,3 +592,173 @@ logButton?.setAttribute('aria-pressed', String(scaleMode === 'log'));
 glButton?.setAttribute('aria-pressed', String(rendererMode === 'webgl'));
 setLive(num('live', 0) === 1);
 status();
+
+// ---------------------------------------------------------------- symbol search
+
+const searchDialog = document.querySelector('#search');
+const searchInput = inp('#search-input');
+const searchResults = document.querySelector('#search-results');
+let searchIndex = 0;
+
+interface Candidate {
+  readonly symbol: string;
+  readonly label: string;
+  readonly source: string;
+}
+
+function candidates(query: string): Candidate[] {
+  const q = query.trim().toUpperCase();
+  const local = SYMBOLS.filter(
+    (s) => q === '' || s.symbol.includes(q) || s.label.toUpperCase().includes(q),
+  ).map((s) => ({ symbol: s.symbol, label: s.label, source: s.source === 'synthetic' ? 'demo' : 'bundled' }));
+
+  // An unmatched query is still offered, because the ticker box can fetch it when the
+  // page has network. Offering it and failing loudly beats pretending it does not exist.
+  if (q !== '' && !local.some((c) => c.symbol === q)) {
+    local.push({ symbol: q, label: 'Fetch from Alpha Vantage', source: 'live' });
+  }
+  return local;
+}
+
+function renderSearch(): void {
+  if (searchResults === null || searchInput === null) return;
+  const list = candidates(searchInput.value);
+  searchIndex = Math.min(searchIndex, Math.max(0, list.length - 1));
+  searchResults.innerHTML = list
+    .map(
+      (c, i) =>
+        `<li role="option" aria-selected="${String(i === searchIndex)}" data-symbol="${c.symbol}">` +
+        `<span class="tk">${c.symbol}</span><span class="nm">${c.label}</span>` +
+        `<span class="src">${c.source}</span></li>`,
+    )
+    .join('');
+  const note = el('#search-note');
+  if (note !== null) {
+    note.textContent =
+      params.get('apikey') === null ? 'live fetch needs ?apikey=' : 'live fetch enabled';
+  }
+}
+
+function openSearch(): void {
+  if (!(searchDialog instanceof HTMLDialogElement)) return;
+  searchIndex = 0;
+  if (searchInput !== null) searchInput.value = '';
+  renderSearch();
+  searchDialog.showModal();
+  searchInput?.focus();
+}
+
+function chooseSearch(): void {
+  if (searchResults === null) return;
+  const selected = searchResults.querySelector('[aria-selected="true"]');
+  const name = selected instanceof HTMLElement ? selected.dataset['symbol'] : undefined;
+  if (name === undefined) return;
+  if (searchDialog instanceof HTMLDialogElement) searchDialog.close();
+  void loadTicker(name);
+}
+
+el('#symbol-button')?.addEventListener('click', openSearch);
+searchInput?.addEventListener('input', () => {
+  searchIndex = 0;
+  renderSearch();
+});
+searchInput?.addEventListener('keydown', (event) => {
+  const list = searchResults?.querySelectorAll('li') ?? [];
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    searchIndex = Math.min(list.length - 1, searchIndex + 1);
+    renderSearch();
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    searchIndex = Math.max(0, searchIndex - 1);
+    renderSearch();
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    chooseSearch();
+  }
+});
+searchResults?.addEventListener('click', (event) => {
+  const item = event.target instanceof HTMLElement ? event.target.closest('li') : null;
+  if (!(item instanceof HTMLElement)) return;
+  const list = [...searchResults.querySelectorAll("li")];
+  searchIndex = list.indexOf(item);
+  chooseSearch();
+});
+
+document.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+    event.preventDefault();
+    openSearch();
+  }
+});
+
+// ---------------------------------------------------------------- axis drags
+
+/**
+ * Dragging the price gutter scales the price axis; dragging the time gutter zooms.
+ * Double-clicking either resets it — the gesture traders expect, and without it a chart
+ * that has been squashed has no way back.
+ */
+let axisDrag: { axis: 'price' | 'time'; y: number; x: number; zoom: number; spacing: number } | null =
+  null;
+
+function axisAt(x: number, y: number): 'price' | 'time' | null {
+  if (chart === null) return null;
+  const layout = chart.layout();
+  if (x >= layout.priceGutter.left) return 'price';
+  if (y >= layout.timeGutter.top) return 'time';
+  return null;
+}
+
+container.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (chart === null) return;
+    const rect = container.getBoundingClientRect();
+    const axis = axisAt(event.clientX - rect.left, event.clientY - rect.top);
+    if (axis === null) return;
+    axisDrag = {
+      axis,
+      x: event.clientX,
+      y: event.clientY,
+      zoom: chart.priceZoom(),
+      spacing: chart.view.get().barSpacing,
+    };
+    event.stopPropagation();
+  },
+  true,
+);
+
+window.addEventListener('pointermove', (event) => {
+  const drag = axisDrag;
+  if (drag === null || chart === null) return;
+  if (drag.axis === 'price') {
+    chart.setPriceZoom(drag.zoom * Math.exp((event.clientY - drag.y) / 260));
+  } else {
+    chart.view.setBarSpacing(drag.spacing * Math.exp((drag.x - event.clientX) / 260));
+  }
+});
+
+window.addEventListener('pointerup', () => {
+  axisDrag = null;
+});
+
+container.addEventListener('dblclick', (event) => {
+  if (chart === null) return;
+  const rect = container.getBoundingClientRect();
+  const axis = axisAt(event.clientX - rect.left, event.clientY - rect.top);
+  if (axis === 'price') chart.resetPriceZoom();
+  else chart.fitAll();
+});
+
+// ---------------------------------------------------------------- jump to latest
+
+const jumpButton = btn('#jump');
+jumpButton?.addEventListener('click', () => {
+  chart?.scrollToRealtime();
+});
+
+window.setInterval(() => {
+  if (jumpButton === null || chart === null) return;
+  jumpButton.hidden = !chart.isScrolledBack();
+}, 250);

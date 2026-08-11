@@ -318,3 +318,28 @@ export function drawLastPrice(
   ctx.fillStyle = '#ffffff';
   ctx.fillText(label, gutter.left + 6, y);
 }
+
+
+/**
+ * Symbol watermark behind the series — drawn on the GRID layer so the candles sit on top
+ * of it. Painting it on the overlay would put it over the data, which is backwards.
+ */
+export function drawWatermark(
+  ctx: CanvasRenderingContext2D,
+  symbol: string,
+  timeframe: string,
+  plot: Rect,
+  theme: Theme,
+): void {
+  ctx.save();
+  ctx.globalAlpha = 0.05;
+  ctx.fillStyle = theme.axisTextStrong;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const size = Math.min(96, Math.max(28, plot.width * 0.075));
+  ctx.font = `600 ${String(Math.round(size))}px ${theme.typography.fontFamily}`;
+  ctx.fillText(symbol, plot.left + plot.width / 2, plot.top + plot.height / 2 - size * 0.35);
+  ctx.font = `400 ${String(Math.round(size * 0.42))}px ${theme.typography.fontFamily}`;
+  ctx.fillText(timeframe, plot.left + plot.width / 2, plot.top + plot.height / 2 + size * 0.45);
+  ctx.restore();
+}
