@@ -4,8 +4,6 @@
 # and only the first 40 lines of them.
 set -uo pipefail
 
-ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-
 FILE="$(python3 -c '
 import json, sys
 try:
@@ -14,6 +12,24 @@ except Exception:
     sys.exit(0)
 sys.stdout.write((d.get("tool_input") or {}).get("file_path") or "")
 ')"
+
+# Resolve the project root from the EDITED FILE, not from CLAUDE_PROJECT_DIR.
+# Subagents work in git worktrees under .claude/worktrees/; anchoring to the parent
+# repo made this hook typecheck the wrong tree and report the parent's unrelated
+# errors as the subagent's own — which is exactly what it did during Phase 5.
+root_for() {
+  local dir
+  dir="$(cd "$(dirname "$1")" 2>/dev/null && pwd)" || return 1
+  while [[ -n "$dir" && "$dir" != "/" ]]; do
+    [[ -f "$dir/package.json" ]] && { printf '%s' "$dir"; return 0; }
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+ROOT=""
+[[ -n "$FILE" ]] && ROOT="$(root_for "$FILE" || true)"
+[[ -z "$ROOT" ]] && ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 cd "$ROOT" || exit 0
 
