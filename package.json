@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:visual": "playwright test"
+    "test:visual": "playwright test",
+    "build:artifact": "vite build && node scripts/build-artifact.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

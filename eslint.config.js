@@ -69,6 +69,8 @@ export default tseslint.config(
       // repo's status — green here could mask a real failure, and their transient
       // breakage would surface as ours.
       '.claude/**',
+      // Build scripts run under plain node and are outside the tsconfig program.
+      'scripts/**',
     ],
   },
   ...tseslint.configs.strictTypeChecked,
