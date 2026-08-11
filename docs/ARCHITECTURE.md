@@ -183,7 +183,7 @@ guarantees candles never touch.
 | 2A | `src/data/**` — WS client, store, history, resample | Subagent A (worktree) |
 | 2B | `src/renderer/**` — surface, scheduler, scales, layers | Subagent B (worktree) |
 | 3 | Playwright visual regression + geometry assertions | after 2A/2B merge |
-| 4 | WebGL series layer behind a flag; Canvas2D stays the reference | later |
+| 4 | WebGL series layer behind `?gl=1`; Canvas2D stays the reference | done |
 
 2A and 2B share only `src/data/types.ts`, which is written first and frozen before either
 starts — that is the entire merge surface between the two worktrees.

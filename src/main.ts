@@ -36,6 +36,9 @@ const chart = createChart({
   tf,
   bars,
   barSpacing: num('spacing', 8),
+  // `?gl=1` moves the series layer to the GPU (RENDER_ALGORITHMS §11). Canvas2D stays
+  // the default and the reference; tests/visual/webgl.spec.ts diffs the two.
+  renderer: num('gl', 0) === 1 ? 'webgl' : 'canvas2d',
 });
 
 window.__chartGeometry = () => chart.geometry();

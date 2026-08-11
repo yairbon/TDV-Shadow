@@ -158,21 +158,46 @@ Y follows the raw pointer; the price label shows `Y⁻¹(yMouse)` rounded to `pr
 
 <!-- MATH-CRITICAL:END -->
 
-## 11. WebGL variant (Phase 2+, behind a flag)
+## 11. WebGL variant (Phase 4, behind the `?gl=1` flag)
 
-Same equations; the transform moves to the vertex shader as an orthographic matrix so the
-CPU uploads raw `(index, price)` pairs once and only the uniforms change on pan/zoom.
+Implemented in `src/renderer/webgl/`. Same equations; the transform moves to the vertex
+shader so the CPU uploads raw tuples once and only uniforms change on pan/zoom.
 
+**This section was rewritten to match the shipped shader.** The earlier draft expressed
+the transform as a fused `u_scale`/`u_offset` pair folding the price map, the viewport
+normalisation and the DPR into two vectors. That is algebraically equivalent but it
+inlined a re-derivation of §2 and §5 that could drift from them silently. The shader now
+evaluates §5 and §2 verbatim in CSS pixels and normalises to clip space as a final step,
+so a change to the canonical transforms cannot leave the GPU path behind:
+
+```glsl
+// §5 bar centre, CSS px
+float xc = uPlot.x + uPlot.z - (uScroll - aIndex) * uBarSpacing;
+
+// §2 price -> CSS px (linear only; log/percent stay on Canvas2D)
+float m = uPlot.w / (uPriceMax - uPriceMin);
+float y  = uPlot.y + (uPriceMax - p) * m;
+
+// §7 snapping: fills round; GLSL floor(v + 0.5) == Math.round for v >= 0
+float snapFill(float v) { return floor(v + 0.5); }
+
+// CSS px -> clip space, Y inverted because Y(p) grows downward
+clip = vec2((x / uViewport.x) * 2.0 - 1.0, 1.0 - (y / uViewport.y) * 2.0);
 ```
-// clip-space, y-down source data
-u_scale  = vec2( 2*s / P.w,        -2 / (pMax - pMin) * (P.h / viewportH) )
-u_offset = vec2( 1 - 2*(k*s)/P.w,   1 - 2*(P.t/viewportH) + 2*pMax/(pMax - pMin) * (P.h/viewportH) )
-gl_Position = vec4(a_pos * u_scale + u_offset, 0, 1)
-```
 
-Geometry: one instanced quad per candle body (6 verts, per-instance
-`[index, openPrice, closePrice, highPrice, lowPrice]`), wicks as a second instanced pass.
-Pixel snapping is done in the fragment/vertex stage by rounding to
-`floor(x * dpr) / dpr + 0.5 / dpr` — the 2D-canvas snapping rules above still govern the
-*intent*. The Canvas2D path stays the reference implementation; any WebGL output that
-disagrees with it by more than 1 device pixel is a WebGL bug.
+Geometry: one unit quad (6 verts) drawn with `drawArraysInstanced`, per-instance
+`[index, open, high, low, close, volume]` (6 floats, stride 24B). Three passes over the
+same buffer, selected by `uPass`: wicks, then bodies over them, then volume columns.
+WebGL2 has no `baseInstance`, so the visible slice is a byte offset into the instance
+buffer. `gl.scissor` is the GPU equivalent of `ctx.clip()` for SKILL rule 8, and the
+instance buffer is re-uploaded only when the snapshot revision changes.
+
+Scope: the **series layer only**. Grid, axes, overlays and crosshair stay Canvas2D in
+both modes, and the linear price scale is the only supported mode — `supportsMode()`
+gates it and the layer warns rather than silently drawing a linear chart for a log view.
+
+The Canvas2D path stays the reference implementation; any WebGL output that disagrees
+with it by more than 1 device pixel is a WebGL bug. `tests/visual/webgl.spec.ts` enforces
+that by comparing painted-column coverage and per-column vertical extents between the two
+renderers, rather than comparing raw pixels — rasteriser antialiasing legitimately differs
+and would make an exact-pixel diff a false alarm.

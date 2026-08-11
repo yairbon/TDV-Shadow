@@ -15,11 +15,15 @@ import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { computeLayout, type Layout, type Rect } from '../renderer/layout.js';
 import { candleGeometry } from '../renderer/scale/timeScale.js';
+import { maxVolume } from '../renderer/scale/volumeScale.js';
+import { createGlSeriesLayer, supportsMode } from '../renderer/webgl/glSeriesLayer.js';
 import { createChartRenderer, type LayerContexts } from '../renderer/index.js';
 import { createScheduler, DirtyFlags, type DirtyMask } from '../renderer/scheduler.js';
 import { createSurface, type Surface } from '../renderer/surface.js';
 import { DARK_THEME, type Theme } from '../renderer/theme.js';
 import { createChartCanvases, type ChartCanvases, type LayerName } from '../ui/chartCanvas.js';
+
+export type RendererMode = 'canvas2d' | 'webgl';
 
 export interface ChartOptions {
   readonly container: HTMLElement;
@@ -29,6 +33,12 @@ export interface ChartOptions {
   readonly barSpacing?: number;
   readonly theme?: Theme;
   readonly pricePrecision?: number;
+  /**
+   * 'webgl' moves ONLY the series layer to the GPU (RENDER_ALGORITHMS §11). Grid,
+   * axes, overlays and crosshair stay Canvas2D either way, and Canvas2D remains the
+   * reference implementation. Linear price scale only.
+   */
+  readonly renderer?: RendererMode;
 }
 
 /** Per-candle geometry actually used for the last frame — the Phase 3 assertion hook. */
@@ -108,17 +118,33 @@ export function createChart(o: ChartOptions): Chart {
   // would race. The container is the single source of truth for size, so it is
   // observed once here and all four layers are resized together.
   const noObserve = { onResize: () => undefined, autoObserve: false } as const;
+  const useGl = (o.renderer ?? 'canvas2d') === 'webgl';
+
+  // A canvas can hold exactly one context type, so in GL mode the series canvas gets a
+  // webgl2 context and no Surface. Its backing store is then sized here instead of by
+  // Surface — same §1 rule, different owner.
+  const glLayer = useGl ? createGlSeriesLayer(canvases.canvases.series) : null;
+
   const surfaces = {
     grid: createSurface(canvases.canvases.grid, noObserve),
-    series: createSurface(canvases.canvases.series, noObserve),
+    series: useGl ? null : createSurface(canvases.canvases.series, noObserve),
     overlay: createSurface(canvases.canvases.overlay, noObserve),
     crosshair: createSurface(canvases.canvases.crosshair, noObserve),
-  } satisfies Record<LayerName, Surface>;
+  } satisfies Record<LayerName, Surface | null>;
+
+  const liveSurfaces = (): Surface[] =>
+    Object.values(surfaces).filter((s): s is Surface => s !== null);
 
   const applySize = (cssWidth: number, cssHeight: number): void => {
     const w = Math.max(1, Math.floor(cssWidth));
     const h = Math.max(1, Math.floor(cssHeight));
-    for (const surface of Object.values(surfaces)) surface.resize(w, h);
+    for (const surface of liveSurfaces()) surface.resize(w, h);
+    if (glLayer !== null) {
+      const canvas = canvases.canvases.series;
+      const ratio = window.devicePixelRatio;
+      canvas.width = Math.round(w * ratio);
+      canvas.height = Math.round(h * ratio);
+    }
     onResize(w, h);
   };
 
@@ -134,9 +160,49 @@ export function createChart(o: ChartOptions): Chart {
 
   const contexts: LayerContexts = {
     grid: surfaces.grid.ctx,
-    series: surfaces.series.ctx,
+    // In GL mode the series canvas has no 2D context. The Series bit is stripped from
+    // the mask below, so the renderer never touches this slot; the overlay context
+    // stands in only to satisfy the shape.
+    series: surfaces.series?.ctx ?? surfaces.overlay.ctx,
     overlay: surfaces.overlay.ctx,
     crosshair: surfaces.crosshair.ctx,
+  };
+
+  let glUnsupportedWarned = false;
+
+  const drawGlSeries = (input: FrameInput): void => {
+    if (glLayer === null) return;
+    if (!supportsMode(input.snapshot.priceScaleMode)) {
+      if (!glUnsupportedWarned) {
+        glUnsupportedWarned = true;
+        // Honest failure: the GPU path implements the linear transform only, and
+        // silently drawing a linear chart while the view asks for log would lie.
+        console.warn(
+          `[tdv-shadow] WebGL series layer supports the linear price scale only; ` +
+            `'${input.snapshot.priceScaleMode}' needs the Canvas2D renderer.`,
+        );
+      }
+      return;
+    }
+    const bars = input.snapshot.series.bars;
+    const { visible, priceScale } = input;
+    glLayer.draw({
+      bars,
+      from: visible.from,
+      to: visible.to,
+      plot: input.layout.plot,
+      volume: input.layout.volume,
+      priceMin: priceScale.min,
+      priceMax: priceScale.max,
+      volumeMax: visible.isEmpty ? 0 : maxVolume(bars, visible.from, visible.to),
+      barSpacing: input.timeScale.barSpacing,
+      scrollPosition: input.timeScale.scrollPosition,
+      theme,
+      revision: input.snapshot.revision,
+      cssWidth: surfaces.grid.cssWidth,
+      cssHeight: surfaces.grid.cssHeight,
+      dpr: surfaces.grid.ratio,
+    });
   };
 
   // --- the single draw entrypoint ----------------------------------------
@@ -151,7 +217,12 @@ export function createChart(o: ChartOptions): Chart {
       priceRange: null,
       autoscaleCache,
     });
-    renderer.render(mask, contexts, input);
+    if (glLayer === null) {
+      renderer.render(mask, contexts, input);
+    } else {
+      renderer.render(mask & ~DirtyFlags.Series, contexts, input);
+      if ((mask & DirtyFlags.Series) !== 0) drawGlSeries(input);
+    }
     lastInput = input;
     frameCount += 1;
     o.container.dispatchEvent(
@@ -222,7 +293,8 @@ export function createChart(o: ChartOptions): Chart {
       containerObserver?.disconnect();
       pointer.dispose();
       scheduler.dispose();
-      for (const surface of Object.values(surfaces)) surface.dispose();
+      for (const surface of liveSurfaces()) surface.dispose();
+      glLayer?.dispose();
       canvases.dispose();
     },
   };
