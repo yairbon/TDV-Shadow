@@ -102,8 +102,13 @@ class CandleSeriesLayer implements SeriesLayer {
         yOpen < yClose ? yOpen : yClose,
         yOpen < yClose ? yClose : yOpen,
       );
-      buf.wickTop[slot] = snapFill(yHigh);
-      buf.wickHeight[slot] = fillSpan(yHigh, yLow);
+      // Ordered by PIXEL, not by price: under §2.1 inversion Y(high) is below Y(low), and
+      // assuming otherwise makes fillSpan negative, which the 1px floor then hides as a
+      // wickless candle rather than as an error.
+      const yWickTop = yHigh < yLow ? yHigh : yLow;
+      const yWickBottom = yHigh < yLow ? yLow : yHigh;
+      buf.wickTop[slot] = snapFill(yWickTop);
+      buf.wickHeight[slot] = fillSpan(yWickTop, yWickBottom);
 
       if (volumeScale !== null) {
         const top = snapFill(volumeScale.y(bar.v));

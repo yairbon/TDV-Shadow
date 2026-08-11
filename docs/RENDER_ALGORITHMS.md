@@ -48,6 +48,28 @@ Invariants:
   layer's job (`ctx.clip` to the plot rect), because clamping would flatten wicks onto
   the plot edge and lie about the data.
 
+## 2.1 Inverted price axis
+
+Inversion is a reflection of the finished map about the plot's horizontal mid-line, not a
+second set of equations:
+
+```
+M(y)      = 2 * P.t + P.h - y          // involution: M(M(y)) = y
+Yinv(p)   = M(Y(p))
+Yinv⁻¹(y) = Y⁻¹(M(y))
+```
+
+Because `M` is applied to the result, §3 (log), percent mode and the §2 degenerate-range
+guard invert unchanged and cannot drift out of agreement with the upright case. `Yinv`
+maps `pMin → P.t` and `pMax → P.t + P.h` — the exact opposite of §2, as required.
+
+Consequences for the layers:
+- Anything that assumed "high is above low" must order by pixel, not by price. In the GL
+  shader the wick rect takes `min`/`max` of the two projected Y values; ordering them by
+  price collapses every wick to the 1px floor when inverted.
+- Volume columns are **not** inverted: they grow from the bottom of their own pane, which
+  has no price meaning.
+
 ## 3. Price → Y (logarithmic scale)
 
 ```

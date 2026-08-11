@@ -95,9 +95,8 @@ function drawBodies(
       if (bar.rising !== rising) continue;
       if (style === 'brick') continue; // bricks have no wick
       const xc = snapFill(input.x(i));
-      const top = snapFill(input.y(bar.h));
-      const bottom = snapFill(input.y(bar.l));
-      ctx.fillRect(xc, top, 1, Math.max(1, bottom - top));
+      const wick = vspan(input.y(bar.h), input.y(bar.l));
+      ctx.fillRect(xc, wick.top, 1, wick.height);
     }
 
     const bodyColor = rising ? theme.upBody : theme.downBody;
@@ -107,9 +106,9 @@ function drawBodies(
       const bar = series.bars[i];
       if (bar.rising !== rising) continue;
       const xc = snapFill(input.x(i));
-      const top = snapFill(input.y(Math.max(bar.o, bar.c)));
-      const bottom = snapFill(input.y(Math.min(bar.o, bar.c)));
-      const height = Math.max(1, bottom - top);
+      const body = vspan(input.y(bar.o), input.y(bar.c));
+      const top = body.top;
+      const height = body.height;
       const left = xc - half;
       const width = Math.max(1, geometry.width);
 
@@ -127,6 +126,19 @@ function drawBodies(
   }
 }
 
+/**
+ * A vertical rect from two projected prices, ordered by PIXEL rather than by price.
+ *
+ * Under §2.1 inversion Y(high) sits below Y(low), so "top = y(high)" produces a negative
+ * height that Math.max(1, …) then quietly renders as a 1px stub. Ordering here keeps
+ * every derived chart type correct whichever way up the axis is.
+ */
+function vspan(a: number, b: number): { readonly top: number; readonly height: number } {
+  const top = snapFill(a < b ? a : b);
+  const bottom = snapFill(a < b ? b : a);
+  return { top, height: Math.max(1, bottom - top) };
+}
+
 function drawOhlcBars(
   ctx: CanvasRenderingContext2D,
   input: DerivedDrawInput,
@@ -142,9 +154,8 @@ function drawOhlcBars(
       const bar = series.bars[i];
       if (bar.rising !== rising) continue;
       const xc = snapFill(input.x(i));
-      const top = snapFill(input.y(bar.h));
-      const bottom = snapFill(input.y(bar.l));
-      ctx.fillRect(xc, top, 1, Math.max(1, bottom - top));
+      const wick = vspan(input.y(bar.h), input.y(bar.l));
+      ctx.fillRect(xc, wick.top, 1, wick.height);
       ctx.fillRect(xc - tick, snapFill(input.y(bar.o)), tick, 1);
       ctx.fillRect(xc, snapFill(input.y(bar.c)), tick, 1);
     }

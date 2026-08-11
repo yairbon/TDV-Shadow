@@ -46,6 +46,7 @@ uniform int uPass;         // 0 wick, 1 body, 2 volume
 uniform int uScaleMode;    // 0 linear (§2), 1 logarithmic (§3)
 uniform float uLogMin;     // ln(pMin) after the §3 guard, log space
 uniform float uLogMax;     // ln(pMax) after the §3 guard, log space
+uniform int uInvert;       // 1 = §2.1 reflection about the plot mid-line
 
 out float vDirection;      // >0 when close >= open
 
@@ -60,7 +61,9 @@ float snapFill(float v) {
 //   §3 log:     Ylog(p) = P.t + (ln pMax - ln p) * P.h / (ln pMax - ln pMin)
 // Percent mode is the log geometry re-based on p0 for LABELS only, so it takes the
 // same branch — the pixels are identical, only the axis text differs.
-float priceToY(float p) {
+// §2/§3 upright map. GLSL has no hoisting: this must be declared before priceToY calls
+// it, or the shader fails to compile and the GL chart silently never paints.
+float uprightY(float p) {
   if (uScaleMode == 1) {
     // §3 drops bars at p <= 0 rather than clamping; the clamp here only keeps log()
     // defined for a value the CPU has already excluded from the visible range.
@@ -70,6 +73,13 @@ float priceToY(float p) {
   }
   float m = uPlot.w / (uPriceMax - uPriceMin);
   return uPlot.y + (uPriceMax - p) * m;
+}
+
+// §2.1: reflect the finished map about the plot's mid-line so log, percent and the
+// degenerate-range guard invert for free and cannot drift from the CPU scale.
+float priceToY(float p) {
+  float y = uprightY(p);
+  return uInvert == 1 ? 2.0 * uPlot.y + uPlot.w - y : y;
 }
 
 void main() {
@@ -105,8 +115,12 @@ void main() {
     // Wick: 1px column on the bar centre, high to low.
     x0 = snapFill(xc);
     x1 = x0 + 1.0;
-    y0 = snapFill(priceToY(aHigh));
-    y1 = snapFill(priceToY(aLow));
+    // min/max rather than assuming high is above low: under §2.1 inversion the two swap,
+    // and ordering them by price would collapse every wick to the 1px floor.
+    float yHigh = snapFill(priceToY(aHigh));
+    float yLow = snapFill(priceToY(aLow));
+    y0 = min(yHigh, yLow);
+    y1 = max(yHigh, yLow);
     y1 = max(y1, y0 + 1.0);
   }
 

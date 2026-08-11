@@ -177,3 +177,52 @@ describe('percent base', () => {
     expect(percentBase([], asBarIndex(0))).toBe(1);
   });
 });
+
+describe('inverted price scale — §2.1', () => {
+  it('swaps the endpoints: pMin at the top, pMax at the bottom', () => {
+    const scale = makePriceScale(makePriceRange(1.25, 2.25), plot, 'linear', asPrice(1), true);
+    expect(scale.y(asPrice(1.25))).toBe(plot.top);
+    expect(scale.y(asPrice(2.25))).toBe(plot.top + plot.height);
+  });
+
+  it('is monotone INCREASING, and still unclamped', () => {
+    const scale = makePriceScale(makePriceRange(100, 200), plot, 'linear', asPrice(1), true);
+    expect(scale.y(asPrice(150))).toBeGreaterThan(scale.y(asPrice(140)));
+    expect(scale.y(asPrice(260))).toBeGreaterThan(plot.top + plot.height);
+    expect(scale.y(asPrice(40))).toBeLessThan(plot.top);
+  });
+
+  it('is the upright map reflected about the plot mid-line, exactly', () => {
+    const upright = makePriceScale(makePriceRange(98.5, 141.25), plot, 'linear', asPrice(1));
+    const flipped = makePriceScale(makePriceRange(98.5, 141.25), plot, 'linear', asPrice(1), true);
+    for (let step = 0; step <= 100; step++) {
+      const p = asPrice(98.5 + (141.25 - 98.5) * (step / 100));
+      const mirrored = 2 * plot.top + plot.height - upright.y(p);
+      expect(Math.abs(flipped.y(p) - mirrored)).toBeLessThan(1e-9);
+    }
+  });
+
+  it('round-trips Y⁻¹(Y(p)) — the reflection is an involution', () => {
+    const scale = makePriceScale(makePriceRange(98.5, 141.25), plot, 'linear', asPrice(1), true);
+    for (let step = 0; step <= 200; step++) {
+      const p = asPrice(98.5 + (141.25 - 98.5) * (step / 200));
+      expect(Math.abs(scale.price(scale.y(p)) - p)).toBeLessThan(1e-9);
+    }
+  });
+
+  it('inverts the log scale too, without a second set of equations', () => {
+    const scale = makePriceScale(makePriceRange(10, 1000), plot, 'log', asPrice(10), true);
+    expect(scale.y(asPrice(10))).toBeCloseTo(plot.top, 9);
+    expect(scale.y(asPrice(1000))).toBeCloseTo(plot.top + plot.height, 9);
+    // 100 is the geometric midpoint of [10, 1000], so it lands on the plot's mid-line
+    // whichever way up the axis is.
+    expect(scale.y(asPrice(100))).toBeCloseTo(plot.top + plot.height / 2, 9);
+    expect(Math.abs(scale.price(scale.y(asPrice(250))) - 250)).toBeLessThan(1e-9);
+  });
+
+  it('keeps §3 rejection of non-positive prices when inverted', () => {
+    const scale = makePriceScale(makePriceRange(10, 1000), plot, 'log', asPrice(10), true);
+    expect(scale.accepts(asPrice(0))).toBe(false);
+    expect(scale.accepts(asPrice(1))).toBe(true);
+  });
+});

@@ -212,6 +212,61 @@ test.describe('WebGL series layer matches the Canvas2D reference', () => {
     expect(moved.length).toBeGreaterThan(0);
   });
 
+  test('inverted scale: vertical extents agree within 1 device pixel (§2.1)', async ({ page }) => {
+    // Inversion lives in two places — makePriceScale on the CPU, the shader on the GPU —
+    // so it is exactly the kind of change that can look right in one renderer and be
+    // silently wrong in the other.
+    const cpu = await coverageOf(page, `?${FIXTURE}&invert=1&gl=0`);
+    const gpu = await coverageOf(page, `?${FIXTURE}&invert=1&gl=1`);
+
+    expect(cpu.paintedPixels).toBeGreaterThan(10_000);
+    expect(gpu.paintedPixels).toBeGreaterThan(10_000);
+
+    const gpuCols = new Set(gpu.columns);
+    const shared = cpu.columns.filter((x) => gpuCols.has(x));
+    expect(shared.length).toBeGreaterThan(100);
+
+    const drift: string[] = [];
+    for (const x of shared) {
+      const a = cpu.extents[String(x)];
+      const b = gpu.extents[String(x)];
+      if (Math.abs(a[0] - b[0]) > 1 || Math.abs(a[1] - b[1]) > 1) {
+        drift.push(
+          `x=${String(x)} cpu=[${String(a[0])},${String(a[1])}] gpu=[${String(b[0])},${String(b[1])}]`,
+        );
+      }
+    }
+    expect(drift.slice(0, 8)).toEqual([]);
+  });
+
+  test('inverting actually moves candles, in both renderers', async ({ page }) => {
+    // Guards the guard above: if `?invert=1` were a no-op in BOTH renderers the agreement
+    // test would compare upright to upright and pass while proving nothing.
+    //
+    // Only "did it change" is asserted here, not the §2.1 identity itself, because the
+    // series canvas also carries the volume pane — which is deliberately NOT inverted, so
+    // a whole-canvas reflection check would be comparing the wrong thing. The exact
+    // identity M(y) = 2*P.t + P.h - y is asserted on drawing anchor pixels in
+    // interaction.spec.ts, where nothing but the price scale is involved.
+    for (const gl of ['0', '1']) {
+      const upright = await coverageOf(page, `?${FIXTURE}&gl=${gl}`);
+      const flipped = await coverageOf(page, `?${FIXTURE}&invert=1&gl=${gl}`);
+
+      const flippedCols = new Set(flipped.columns);
+      const shared = upright.columns.filter((x) => flippedCols.has(x));
+      expect(shared.length).toBeGreaterThan(100);
+
+      const moved = shared.filter((x) => {
+        const a = upright.extents[String(x)];
+        const b = flipped.extents[String(x)];
+        return Math.abs(a[0] - b[0]) > 1;
+      });
+      // Not "at least one": a single moved column could be noise. Most of the chart has
+      // to move, because inversion reflects every bar that is not exactly mid-range.
+      expect(moved.length).toBeGreaterThan(shared.length * 0.6);
+    }
+  });
+
   test('webgl screenshot', async ({ page }) => {
     await coverageOf(page, `?${FIXTURE}&gl=1`);
     await expect(page.locator('#chart')).toHaveScreenshot('webgl-candles-1m.png');

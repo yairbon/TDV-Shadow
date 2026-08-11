@@ -24,6 +24,8 @@ export interface Workspace {
   readonly timeframe: Timeframe;
   readonly chartType: ChartType;
   readonly priceScaleMode: PriceScaleMode;
+  /** §2.1 price-axis inversion. */
+  readonly priceScaleInverted: boolean;
   readonly renderer: 'canvas2d' | 'webgl';
   readonly indicators: readonly { readonly id: IndicatorId; readonly params: IndicatorParams }[];
   /** Serialised drawing store, or null when there are none. */
@@ -83,6 +85,10 @@ export function loadWorkspace(): Workspace | null {
     chartType: record['chartType'],
     priceScaleMode:
       mode === 'log' || mode === 'percent' || mode === 'linear' ? mode : 'linear',
+    // Defaulted rather than rejected: a payload written before this field existed is
+    // still perfectly usable, and discarding a whole workspace over one boolean is worse
+    // than starting it the right way up.
+    priceScaleInverted: record['priceScaleInverted'] === true,
     renderer: renderer === 'webgl' ? 'webgl' : 'canvas2d',
     indicators: indicators.flatMap((entry) => {
       if (typeof entry !== 'object' || entry === null) return [];

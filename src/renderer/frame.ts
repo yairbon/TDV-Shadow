@@ -102,6 +102,8 @@ export interface FrameInputOptions {
   readonly pointer: PointerState | null;
   /** Explicit price range (manual scale drag). Null autoscales per §4. */
   readonly priceRange: PriceRange | null;
+  /** §2.1 — reflects the price map so high prices sit at the bottom. */
+  readonly priceScaleInverted?: boolean;
   /**
    * Memo for the §4 autoscale. Create one per chart and pass it every frame;
    * omitting it recomputes the range on every frame, which §4 forbids for anything
@@ -134,6 +136,7 @@ export function buildFrameInput(o: FrameInputOptions): FrameInput {
     o.layout.plot,
     o.snapshot.priceScaleMode,
     percentBase(bars, visible.from),
+    o.priceScaleInverted ?? false,
   );
 
   return Object.freeze({

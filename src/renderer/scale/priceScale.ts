@@ -64,8 +64,31 @@ export interface PriceScale {
 /**
  * Builds the transform for one frame. `plot` supplies `P.t` and `P.h`; `base` is
  * ignored outside percent mode.
+ *
+ * `inverted` implements §2.1: the upright map reflected about the plot's horizontal
+ * mid-line, `M(y) = 2·P.t + P.h − y`. Reflecting the finished map rather than writing a
+ * second pair of equations means log, percent and the degenerate-range guard invert for
+ * free and cannot drift out of agreement with the upright case. `M` is an involution, so
+ * the same reflection serves both directions.
  */
 export function makePriceScale(
+  range: PriceRange,
+  plot: Rect,
+  mode: PriceScaleMode,
+  base: Price,
+  inverted = false,
+): PriceScale {
+  const upright = makeUprightScale(range, plot, mode, base);
+  if (!inverted) return upright;
+  const mirror = (y: number): Pixel => asPixel(2 * plot.top + plot.height - y);
+  return Object.freeze({
+    ...upright,
+    y: (p: Price): Pixel => mirror(upright.y(p)),
+    price: (y: Pixel): Price => upright.price(mirror(y)),
+  });
+}
+
+function makeUprightScale(
   range: PriceRange,
   plot: Rect,
   mode: PriceScaleMode,

@@ -19,6 +19,10 @@ export interface DrawingStore {
     },
   ): Drawing;
   update(id: string, patch: Partial<Pick<Drawing, 'anchors' | 'style' | 'params' | 'locked' | 'visible'>>): Drawing | null;
+  /** Copies a drawing, optionally offset in data space. Returns the copy. */
+  duplicate(id: string, offset?: { readonly barIndex: number; readonly price: number }): Drawing | null;
+  /** Moves a drawing to the front or the back of the paint order. */
+  reorder(id: string, to: 'front' | 'back'): boolean;
   remove(id: string): boolean;
   clear(): number;
   select(id: string | null): void;
@@ -75,11 +79,43 @@ export function createDrawingStore(idSeed = 0): DrawingStore {
       const index = drawings.findIndex((d) => d.id === id);
       if (index < 0) return null;
       const current = drawings[index];
-      if (current.locked) return current;
+      // A lock protects the drawing's SHAPE, not the lock itself: rejecting every patch
+      // on a locked drawing made `locked: false` unreachable, so locking was one-way.
+      const onlyFlags = Object.keys(patch).every((key) => key === 'locked' || key === 'visible');
+      if (current.locked && !onlyFlags) return current;
       const next = freeze({ ...current, ...patch });
       drawings = [...drawings.slice(0, index), next, ...drawings.slice(index + 1)];
       bump();
       return next;
+    },
+
+    duplicate(id, offset = { barIndex: 0, price: 0 }) {
+      const source = drawings.find((d) => d.id === id);
+      if (source === undefined) return null;
+      nextId += 1;
+      const copy = freeze({
+        ...source,
+        id: `d${String(nextId)}`,
+        locked: false,
+        anchors: source.anchors.map((a) => ({
+          barIndex: a.barIndex + offset.barIndex,
+          price: a.price + offset.price,
+        })),
+      });
+      drawings = [...drawings, copy];
+      bump();
+      return copy;
+    },
+
+    reorder(id, to) {
+      const index = drawings.findIndex((d) => d.id === id);
+      if (index < 0) return false;
+      if (to === 'front' ? index === drawings.length - 1 : index === 0) return false;
+      const moved = drawings[index];
+      const rest = [...drawings.slice(0, index), ...drawings.slice(index + 1)];
+      drawings = to === 'front' ? [...rest, moved] : [moved, ...rest];
+      bump();
+      return true;
     },
 
     remove(id) {
@@ -101,7 +137,11 @@ export function createDrawingStore(idSeed = 0): DrawingStore {
     },
 
     select(id) {
+      // Selection is drawn (the highlight and the anchor handles), so a silent change
+      // left the previous selection painted until something else forced a repaint.
+      if (selectedId === id) return;
       selectedId = id;
+      bump();
     },
     selected: () => selectedId,
     revision: () => revision,

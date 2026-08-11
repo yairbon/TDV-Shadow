@@ -121,6 +121,9 @@ export interface Chart {
   }[];
   /** Vertical price-axis zoom: >1 compresses the range, <1 expands it. */
   setPriceZoom(factor: number): void;
+  /** §2.1 price-axis inversion — high prices at the bottom. */
+  setPriceInverted(on: boolean): void;
+  priceInverted(): boolean;
   priceZoom(): number;
   resetPriceZoom(): void;
   /** True when the view has been scrolled away from the newest bar. */
@@ -176,6 +179,7 @@ export function createChart(o: ChartOptions): Chart {
   let handleCounter = 0;
   let lastGeometry: readonly DrawingGeometry[] = [];
   let priceZoom = 1;
+  let priceInverted = false;
 
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
@@ -273,6 +277,7 @@ export function createChart(o: ChartOptions): Chart {
       priceMin: priceScale.min,
       priceMax: priceScale.max,
       scaleMode: input.snapshot.priceScaleMode,
+      inverted: priceInverted,
       volumeMax: visible.isEmpty ? 0 : maxVolume(bars, visible.from, visible.to),
       barSpacing: input.timeScale.barSpacing,
       scrollPosition: input.timeScale.scrollPosition,
@@ -344,7 +349,10 @@ export function createChart(o: ChartOptions): Chart {
       ctx.restore();
     }
 
-    const geometries = drawings.list().map((drawing) =>
+    // `visible: false` is part of the store contract and reachable through loadJSON, but
+    // nothing honoured it — a restored hidden drawing painted anyway. Filtering here also
+    // keeps it out of `lastGeometry`, so a hidden shape cannot be hit-tested either.
+    const geometries = drawings.list().filter((drawing) => drawing.visible).map((drawing) =>
       buildGeometry(
         drawing,
         { y: (price) => input.priceScale.y(asPrice(price)), price: (y) => input.priceScale.price(asPixel(y)) },
@@ -380,6 +388,7 @@ export function createChart(o: ChartOptions): Chart {
       overlays: [],
       pointer: pointer.pointer(),
       priceRange: null,
+      priceScaleInverted: priceInverted,
       autoscaleCache,
     });
 
@@ -397,6 +406,7 @@ export function createChart(o: ChartOptions): Chart {
         overlays: [],
         pointer: pointer.pointer(),
         priceRange: makePriceRange(centre - half, centre + half),
+        priceScaleInverted: priceInverted,
         autoscaleCache,
       });
     }
@@ -568,6 +578,12 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     priceZoom: () => priceZoom,
+    setPriceInverted(on) {
+      if (on === priceInverted) return;
+      priceInverted = on;
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    priceInverted: () => priceInverted,
     resetPriceZoom() {
       if (priceZoom === 1) return;
       priceZoom = 1;

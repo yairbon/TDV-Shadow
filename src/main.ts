@@ -15,8 +15,9 @@ import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { fetchDailySeries } from './app/liveData.js';
 import { installControlApi } from './app/control.js';
-import { clearWorkspace, loadWorkspace, saveWorkspace } from './app/workspace.js';
+import { clearWorkspace, loadWorkspace, saveWorkspace, type Workspace } from './app/workspace.js';
 import { createHistory, type HistoryState } from './app/history.js';
+import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
@@ -110,6 +111,7 @@ let rendererMode: RendererMode = num('gl', 0) === 1 ? 'webgl' : (saved?.renderer
 let scaleMode: PriceScaleMode =
   params.get('scale') === 'log' ? 'log' : (saved?.priceScaleMode ?? 'linear');
 let themeName: 'dark' | 'light' = 'dark';
+let inverted = params.get('invert') === '1' || (saved?.priceScaleInverted ?? false);
 let chart: Chart | null = null;
 const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
@@ -141,6 +143,10 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     const fitted = Math.min(120, Math.max(1.5, (width * 0.92) / bars.length));
     chart.view.update({ barSpacing: fitted, scrollPosition: bars.length - 1 + 2 });
   }
+
+  // Axis inversion lives on the chart instance, so it has to be re-applied whenever the
+  // chart is rebuilt (theme swap, renderer swap) or it silently resets.
+  if (inverted) chart.setPriceInverted(true);
 
   installControlApi(() => chart, {
     symbol,
@@ -368,10 +374,16 @@ function setTimeframe(next: Timeframe): void {
 // ---------------------------------------------------------------- toggles
 
 const logButton = btn('#scale-log');
-logButton?.addEventListener('click', () => {
-  scaleMode = scaleMode === 'log' ? 'linear' : 'log';
-  logButton.setAttribute('aria-pressed', String(scaleMode === 'log'));
+
+/** Single path for the log toggle, so the menu and the toolbar cannot disagree. */
+function setScaleMode(next: PriceScaleMode): void {
+  scaleMode = next;
+  logButton?.setAttribute('aria-pressed', String(scaleMode === 'log'));
   chart?.view.setPriceScaleMode(scaleMode);
+}
+
+logButton?.addEventListener('click', () => {
+  setScaleMode(scaleMode === 'log' ? 'linear' : 'log');
 });
 
 const glButton = btn('#renderer-webgl');
@@ -766,7 +778,7 @@ container.addEventListener(
     if (chart === null) return;
     const rect = container.getBoundingClientRect();
     const axis = axisAt(event.clientX - rect.left, event.clientY - rect.top);
-    if (axis === null) return;
+    if (axis === null || event.button !== 0) return;
     axisDrag = {
       axis,
       x: event.clientX,
@@ -823,40 +835,36 @@ window.setInterval(() => {
  * second and localStorage writes are synchronous.
  */
 let saveTimer: number | null = null;
+
+/** One description of what a saved workspace IS, so the two save paths cannot drift. */
+function snapshotWorkspace(active: Chart): Workspace {
+  const view = active.view.get();
+  return {
+    symbol,
+    timeframe: tf,
+    chartType: active.chartType(),
+    priceScaleMode: view.priceScaleMode,
+    priceScaleInverted: inverted,
+    renderer: rendererMode,
+    indicators: active.listIndicators().map((i) => ({ id: i.id, params: i.params })),
+    drawings: active.drawings.list().length > 0 ? active.drawings.toJSON() : null,
+    barSpacing: view.barSpacing,
+    scrollPosition: view.scrollPosition,
+  };
+}
+
 function persist(): void {
   if (saveTimer !== null) window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
-    if (chart === null) return;
-    const view = chart.view.get();
-    saveWorkspace({
-      symbol,
-      timeframe: tf,
-      chartType: chart.chartType(),
-      priceScaleMode: view.priceScaleMode,
-      renderer: rendererMode,
-      indicators: chart.listIndicators().map((i) => ({ id: i.id, params: i.params })),
-      drawings: chart.drawings.list().length > 0 ? chart.drawings.toJSON() : null,
-      barSpacing: view.barSpacing,
-      scrollPosition: view.scrollPosition,
-    });
+    const active = currentChart();
+    if (active !== null) saveWorkspace(snapshotWorkspace(active));
   }, 400);
 }
 
 window.setInterval(persist, 2000);
 window.addEventListener('beforeunload', () => {
-  if (chart === null) return;
-  const view = chart.view.get();
-  saveWorkspace({
-    symbol,
-    timeframe: tf,
-    chartType: chart.chartType(),
-    priceScaleMode: view.priceScaleMode,
-    renderer: rendererMode,
-    indicators: chart.listIndicators().map((i) => ({ id: i.id, params: i.params })),
-    drawings: chart.drawings.list().length > 0 ? chart.drawings.toJSON() : null,
-    barSpacing: view.barSpacing,
-    scrollPosition: view.scrollPosition,
-  });
+  const active = currentChart();
+  if (active !== null) saveWorkspace(snapshotWorkspace(active));
 });
 
 el('#reset-workspace')?.addEventListener('click', () => {
@@ -945,7 +953,9 @@ container.addEventListener(
   'pointerdown',
   (event) => {
     const active = currentChart();
-    if (active === null || activeTool !== '') return;
+    // Button 0 only: a right-click must open the menu, not start a drag that the
+    // following pointerup then commits.
+    if (active === null || activeTool !== '' || event.button !== 0) return;
     const point = localPoint(event);
     const hit = active.hitTestAt(point.x, point.y);
     if (hit === null) {
@@ -957,9 +967,15 @@ container.addEventListener(
     }
 
     const drawing = active.drawings.get(hit.id);
-    if (drawing === null || drawing.locked) return;
+    if (drawing === null) return;
 
+    // A locked drawing still selects — otherwise there is no way to reach it to unlock —
+    // it just refuses to move.
     active.drawings.select(hit.id);
+    if (drawing.locked) {
+      status();
+      return;
+    }
     capture();
     drag = {
       id: hit.id,
@@ -1023,6 +1039,187 @@ container.addEventListener('pointermove', (event) => {
   container.style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
 });
 
+// ---------------------------------------------------------------- context menus
+
+/**
+ * What a right-click means depends only on WHERE it landed, so the region test lives
+ * here rather than inside the widget: a drawing under the cursor wins, then the two
+ * gutters, then the plot itself.
+ */
+const menu = createContextMenu();
+
+function drawingMenu(active: Chart, id: string): MenuEntry[] {
+  const drawing = active.drawings.get(id);
+  if (drawing === null) return [];
+  const locked = drawing.locked;
+  const mutate = (change: () => void): void => {
+    capture();
+    change();
+    status();
+  };
+  return [
+    {
+      label: 'Clone',
+      onSelect: () => {
+        // Offset so the copy is visibly a second shape rather than sitting exactly on
+        // top of the original, where it would look like nothing happened.
+        mutate(() => {
+          const copy = active.drawings.duplicate(id, { barIndex: 3, price: 0 });
+          if (copy !== null) active.drawings.select(copy.id);
+        });
+      },
+    },
+    {
+      label: locked ? 'Unlock' : 'Lock',
+      checked: locked,
+      onSelect: () => {
+        mutate(() => active.drawings.update(id, { locked: !locked }));
+      },
+    },
+    // No "Hide": a hidden drawing is not hit-testable, so with no object tree to select
+    // it from there would be no way to bring it back. Lock is the reversible version.
+    'separator',
+    {
+      label: 'Bring to front',
+      onSelect: () => {
+        mutate(() => active.drawings.reorder(id, 'front'));
+      },
+    },
+    {
+      label: 'Send to back',
+      onSelect: () => {
+        mutate(() => active.drawings.reorder(id, 'back'));
+      },
+    },
+    'separator',
+    {
+      label: 'Remove',
+      danger: true,
+      onSelect: () => {
+        mutate(() => active.drawings.remove(id));
+      },
+    },
+  ];
+}
+
+function indicatorSubmenu(active: Chart): MenuEntry[] {
+  return INDICATOR_IDS.map((id) => ({
+    label: id.replace(/-/g, ' ').toUpperCase(),
+    onSelect: () => {
+      capture();
+      active.addIndicator(id);
+      renderLegend(null);
+      status();
+    },
+  }));
+}
+
+function scaleEntries(active: Chart): MenuEntry[] {
+  return [
+    {
+      label: 'Logarithmic',
+      checked: scaleMode === 'log',
+      onSelect: () => {
+        setScaleMode(scaleMode === 'log' ? 'linear' : 'log');
+      },
+    },
+    {
+      label: 'Invert price scale',
+      checked: inverted,
+      onSelect: () => {
+        inverted = !inverted;
+        active.setPriceInverted(inverted);
+      },
+    },
+    {
+      label: 'Auto scale',
+      onSelect: () => {
+        active.resetPriceZoom();
+      },
+    },
+  ];
+}
+
+function plotMenu(active: Chart): MenuEntry[] {
+  const shapes = active.drawings.list().length;
+  const indicators = active.listIndicators().length;
+  return [
+    { label: 'Add indicator', items: indicatorSubmenu(active) },
+    'separator',
+    ...scaleEntries(active),
+    {
+      label: 'Fit all bars',
+      onSelect: () => {
+        active.fitAll();
+      },
+    },
+    {
+      label: 'Go to realtime',
+      onSelect: () => {
+        active.scrollToRealtime();
+      },
+    },
+    'separator',
+    {
+      label: `Remove ${String(indicators)} indicator${indicators === 1 ? '' : 's'}`,
+      disabled: indicators === 0,
+      onSelect: () => {
+        capture();
+        for (const entry of active.listIndicators()) active.removeIndicator(entry.handleId);
+        renderLegend(null);
+        status();
+      },
+    },
+    {
+      label: `Remove ${String(shapes)} drawing${shapes === 1 ? '' : 's'}`,
+      danger: true,
+      disabled: shapes === 0,
+      onSelect: () => {
+        capture();
+        active.drawings.clear();
+        status();
+      },
+    },
+  ];
+}
+
+function timeAxisMenu(active: Chart): MenuEntry[] {
+  return [
+    {
+      label: 'Fit all bars',
+      onSelect: () => {
+        active.fitAll();
+      },
+    },
+    {
+      label: 'Go to realtime',
+      onSelect: () => {
+        active.scrollToRealtime();
+      },
+    },
+  ];
+}
+
+container.addEventListener('contextmenu', (event) => {
+  const active = currentChart();
+  if (active === null) return;
+  event.preventDefault();
+  const point = localPoint(event);
+  const hit = active.hitTestAt(point.x, point.y);
+
+  if (hit !== null) {
+    active.drawings.select(hit.id);
+    status();
+    menu.open(event.clientX, event.clientY, drawingMenu(active, hit.id));
+    return;
+  }
+
+  const axis = axisAt(point.x, point.y);
+  const entries =
+    axis === 'price' ? scaleEntries(active) : axis === 'time' ? timeAxisMenu(active) : plotMenu(active);
+  menu.open(event.clientX, event.clientY, entries);
+});
+
 // ---------------------------------------------------------------- shortcuts
 
 const TOOL_KEYS: Readonly<Record<string, DrawingKind>> = {
@@ -1074,10 +1271,13 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
     const id = active?.drawings.selected();
-    if (id !== undefined && id !== null) {
+    if (id !== undefined && id !== null && active !== null) {
       event.preventDefault();
+      // A lock is meant to protect the drawing from an accidental gesture; deleting it
+      // with one keystroke would make the lock decorative.
+      if (active.drawings.get(id)?.locked === true) return;
       capture();
-      active?.drawings.remove(id);
+      active.drawings.remove(id);
       status();
     }
     return;

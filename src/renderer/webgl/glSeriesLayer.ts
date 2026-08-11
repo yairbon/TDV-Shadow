@@ -37,6 +37,8 @@ export interface GlFrame {
   readonly priceMax: number;
   /** Which §-transform the shader should evaluate. */
   readonly scaleMode: PriceScaleMode;
+  /** §2.1 — reflect the price map about the plot mid-line. */
+  readonly inverted?: boolean;
   readonly volumeMax: number;
   readonly barSpacing: number;
   readonly scrollPosition: number;
@@ -183,6 +185,7 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
     bodyWidth: uniform('uBodyWidth'),
     pass: uniform('uPass'),
     scaleMode: uniform('uScaleMode'),
+    invert: uniform('uInvert'),
     logMin: uniform('uLogMin'),
     logMax: uniform('uLogMax'),
     colorUp: uniform('uColorUp'),
@@ -267,6 +270,7 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
     gl.uniform1f(u.volumeMax, frame.volumeMax);
     gl.uniform1f(u.bodyWidth, geometry.width);
     gl.uniform1i(u.scaleMode, scaleModeFlag(frame.scaleMode));
+    gl.uniform1i(u.invert, frame.inverted === true ? 1 : 0);
     // §3 works in log space. The CPU already applied the degenerate-range guard there,
     // so re-taking the log of the exposed bounds recovers exactly lMin/lMax.
     gl.uniform1f(u.logMin, Math.log(Math.max(frame.priceMin, MIN_LOG_PRICE)));
