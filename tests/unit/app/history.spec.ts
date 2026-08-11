@@ -41,10 +41,20 @@ describe('history', () => {
     expect(h.depth().undo).toBe(1);
   });
 
+  it('does not collapse when only an indicator style differs', () => {
+    // Colour is part of the state a user expects Ctrl+Z to restore.
+    const h = createHistory();
+    h.capture(state('a', [{ id: 'sma', params: { period: 20 }, styles: {} }]));
+    h.capture(
+      state('a', [{ id: 'sma', params: { period: 20 }, styles: { sma: { color: '#ff0000' } } }]),
+    );
+    expect(h.depth().undo).toBe(2);
+  });
+
   it('does not collapse when only the indicators differ', () => {
     const h = createHistory();
-    h.capture(state('a', [{ id: 'sma', params: { period: 20 } }]));
-    h.capture(state('a', [{ id: 'sma', params: { period: 50 } }]));
+    h.capture(state('a', [{ id: 'sma', params: { period: 20 }, styles: {} }]));
+    h.capture(state('a', [{ id: 'sma', params: { period: 50 }, styles: {} }]));
     expect(h.depth().undo).toBe(2);
   });
 

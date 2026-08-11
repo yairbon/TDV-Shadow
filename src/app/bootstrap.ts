@@ -26,6 +26,7 @@ import {
   drawLastPrice,
   drawVolumeProfile,
   drawWatermark,
+  type PlotStyles,
 } from '../renderer/layers/annotationsLayer.js';
 import { buildGeometry, type DrawingGeometry } from '../drawings/geometry.js';
 import { hitTest, type Hit } from '../drawings/hitTest.js';
@@ -103,7 +104,16 @@ export interface Chart {
   /** Active chart type; resampling types are excluded from the app picker (see below). */
   chartType(): ChartType;
   setChartType(type: ChartType, params?: ChartTypeParams): void;
-  addIndicator(id: IndicatorId, params?: IndicatorParams): ActiveIndicator;
+  addIndicator(id: IndicatorId, params?: IndicatorParams, styles?: PlotStyles): ActiveIndicator;
+  /**
+   * Re-parameterises or re-styles a live indicator in place, keeping its handle and its
+   * position in the pane stack. Replacing it with a remove+add would move a pane
+   * indicator to the bottom of the stack every time a period changed.
+   */
+  updateIndicator(
+    handleId: string,
+    patch: { readonly params?: IndicatorParams; readonly styles?: PlotStyles },
+  ): ActiveIndicator | null;
   removeIndicator(handleId: string): boolean;
   listIndicators(): readonly ActiveIndicator[];
   /** Geometry of every drawing in the last frame — used for anchor verification. */
@@ -313,12 +323,12 @@ export function createChart(o: ChartOptions): Chart {
       indicatorMemo(indicator.handleId, revision, indicator.id, indicator.params, bars),
     );
 
-    for (const { result } of overlays) {
+    for (const { indicator, result } of overlays) {
       if (result.id === 'volume-profile') {
         drawVolumeProfile(ctx, result as VolumeProfileResult, overlayInput, priceScale);
         continue;
       }
-      drawIndicatorOverlay(ctx, result, overlayInput, priceScale);
+      drawIndicatorOverlay(ctx, result, overlayInput, priceScale, indicator.styles);
     }
 
     // One rect per pane indicator, stacked under the volume pane. Panes beyond what the
@@ -338,7 +348,14 @@ export function createChart(o: ChartOptions): Chart {
       ctx.stroke();
       ctx.restore();
 
-      drawIndicatorPane(ctx, panes[i].result, overlayInput, rect, geometry.width);
+      drawIndicatorPane(
+        ctx,
+        panes[i].result,
+        overlayInput,
+        rect,
+        geometry.width,
+        panes[i].indicator.styles,
+      );
 
       // Pane title, so three stacked oscillators are still tellable apart.
       ctx.save();
@@ -524,13 +541,35 @@ export function createChart(o: ChartOptions): Chart {
       features.chartParams = params ?? {};
       scheduler.invalidate(DirtyFlags.All);
     },
-    addIndicator(id, params = {}) {
+    addIndicator(id, params = {}, styles = {}) {
       handleCounter += 1;
-      const indicator: ActiveIndicator = { handleId: `i${String(handleCounter)}`, id, params };
+      const indicator: ActiveIndicator = {
+        handleId: `i${String(handleCounter)}`,
+        id,
+        params,
+        styles,
+      };
       features.indicators = [...features.indicators, indicator];
       layout = relayout(cssSize.width, cssSize.height);
       scheduler.invalidate(DirtyFlags.All);
       return indicator;
+    },
+    updateIndicator(handleId, patch) {
+      const index = features.indicators.findIndex((i) => i.handleId === handleId);
+      if (index < 0) return null;
+      const current = features.indicators[index];
+      const next: ActiveIndicator = {
+        ...current,
+        params: patch.params ?? current.params,
+        styles: patch.styles ?? current.styles,
+      };
+      features.indicators = [
+        ...features.indicators.slice(0, index),
+        next,
+        ...features.indicators.slice(index + 1),
+      ];
+      scheduler.invalidate(DirtyFlags.All);
+      return next;
     },
     removeIndicator(handleId) {
       const next = features.indicators.filter((i) => i.handleId !== handleId);

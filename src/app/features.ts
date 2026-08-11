@@ -12,11 +12,18 @@ import { applyChartType } from '../charts/registry.js';
 import type { ChartType, ChartTypeParams, DerivedSeries } from '../charts/types.js';
 import { computeIndicator } from '../indicators/registry.js';
 import type { IndicatorId, IndicatorParams, IndicatorResult } from '../indicators/types.js';
+import type { PlotStyles } from '../renderer/layers/annotationsLayer.js';
 
 export interface ActiveIndicator {
   readonly handleId: string;
   readonly id: IndicatorId;
   readonly params: IndicatorParams;
+  /**
+   * Per-plot appearance chosen by the user, keyed by plot key. Deliberately NOT part of
+   * the memo key: styles change how a result is painted, never what it computes, so a
+   * colour change must not throw away a 400-bar MACD.
+   */
+  readonly styles: PlotStyles;
 }
 
 export interface FeatureState {

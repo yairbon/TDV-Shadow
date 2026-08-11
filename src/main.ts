@@ -18,11 +18,12 @@ import { installControlApi } from './app/control.js';
 import { clearWorkspace, loadWorkspace, saveWorkspace, type Workspace } from './app/workspace.js';
 import { createHistory, type HistoryState } from './app/history.js';
 import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
+import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
-import { INDICATOR_IDS } from './indicators/registry.js';
+import { computeIndicator, INDICATOR_IDS } from './indicators/registry.js';
 import { TOOL_DEFINITIONS } from './drawings/tools.js';
 import type { DrawingKind, MagnetMode } from './drawings/types.js';
 
@@ -195,7 +196,10 @@ function renderLegend(index: number | null): void {
       return (
         `<div class="row ind" data-handle="${entry.handleId}">` +
         `<span>${entry.label}</span><span>${readout}</span>` +
-        `<button type="button" title="Remove ${entry.label}" aria-label="Remove ${entry.label}">×</button>` +
+        `<button type="button" data-action="settings" title="${entry.label} settings" ` +
+        `aria-label="${entry.label} settings">⚙</button>` +
+        `<button type="button" data-action="remove" title="Remove ${entry.label}" ` +
+        `aria-label="Remove ${entry.label}">×</button>` +
         `</div>`
       );
     })
@@ -225,11 +229,25 @@ legend?.addEventListener('click', (event) => {
   const handle = target.closest('[data-handle]');
   if (!(handle instanceof HTMLElement)) return;
   const id = handle.dataset['handle'];
-  if (id !== undefined) {
-    capture();
-    chart?.removeIndicator(id);
+  if (id === undefined) return;
+
+  if (target.dataset['action'] === 'settings') {
+    openIndicatorSettings(id);
+    return;
   }
+  capture();
+  chart?.removeIndicator(id);
   renderLegend(null);
+});
+
+// Double-clicking the row is the TradingView gesture; the gear is the discoverable one,
+// and the only one that works on a touch screen.
+legend?.addEventListener('dblclick', (event) => {
+  const target = event.target;
+  const handle = target instanceof HTMLElement ? target.closest('[data-handle]') : null;
+  if (!(handle instanceof HTMLElement)) return;
+  const id = handle.dataset['handle'];
+  if (id !== undefined) openIndicatorSettings(id);
 });
 
 // The legend follows the crosshair. This only reads state and writes text, so it stays
@@ -476,6 +494,47 @@ el('#indicator-clear')?.addEventListener('click', () => {
   status();
 });
 
+// ---------------------------------------------------------------- indicator settings
+
+const indicatorDialog = createIndicatorDialog();
+
+/**
+ * Opens the settings sheet for one live indicator.
+ *
+ * `updateIndicator` rather than remove+add: the handle and the pane position have to
+ * survive, or changing RSI's length would drop its pane to the bottom of the stack.
+ *
+ * Undo is captured ONCE, on open, not per keystroke — otherwise typing "50" over "20"
+ * would leave three separate undo steps for one edit.
+ */
+function openIndicatorSettings(handleId: string): void {
+  const active = currentChart();
+  if (active === null) return;
+  const indicator = active.listIndicators().find((i) => i.handleId === handleId);
+  if (indicator === undefined) return;
+
+  capture();
+  indicatorDialog.open({
+    id: indicator.id,
+    handleId,
+    params: indicator.params,
+    styles: indicator.styles,
+    // Plots are asked of the indicator itself, with no bars: the declaration is part of
+    // the result, so this is the only honest source for "which lines does this draw".
+    plots: computeIndicator(indicator.id, [], indicator.params).plots,
+    onApply: (settings) => {
+      currentChart()?.updateIndicator(handleId, settings);
+      renderLegend(null);
+      status();
+    },
+    onCancel: (settings) => {
+      currentChart()?.updateIndicator(handleId, settings);
+      renderLegend(null);
+      status();
+    },
+  });
+}
+
 // ---------------------------------------------------------------- tool rail
 
 const ICONS: Readonly<Record<string, string>> = {
@@ -637,7 +696,7 @@ switchSymbol(symbol);
 const booted = currentChart();
 if (restoring && saved !== null && booted !== null) {
   restoring = false;
-  for (const entry of saved.indicators) booted.addIndicator(entry.id, entry.params);
+  for (const entry of saved.indicators) booted.addIndicator(entry.id, entry.params, entry.styles);
   if (saved.drawings !== null) booted.drawings.loadJSON(saved.drawings);
   if (Number.isFinite(saved.scrollPosition) && saved.barSpacing > 0) {
     booted.view.update({ barSpacing: saved.barSpacing, scrollPosition: saved.scrollPosition });
@@ -820,12 +879,28 @@ jumpButton?.addEventListener('click', () => {
   chart?.scrollToRealtime();
 });
 
+let legendSignature = '';
+
 window.setInterval(() => {
   if (chart === null) return;
   if (jumpButton !== null) jumpButton.hidden = !chart.isScrolledBack();
   // Keeps the counters honest after changes made through the control API, which never
   // touch the toolbar handlers.
   status();
+
+  // The legend follows the crosshair, so it is normally redrawn by pointermove. An
+  // indicator added or removed through the control API touches neither the toolbar
+  // handlers nor the pointer, and its row would not appear until the user happened to
+  // move the mouse. Redraw only when the SET changes, not every tick, so this never
+  // fights the cursor readout.
+  const signature = chart
+    .listIndicators()
+    .map((i) => `${i.handleId}:${i.id}`)
+    .join(',');
+  if (signature !== legendSignature) {
+    legendSignature = signature;
+    renderLegend(null);
+  }
 }, 250);
 
 // ---------------------------------------------------------------- persistence
@@ -846,7 +921,11 @@ function snapshotWorkspace(active: Chart): Workspace {
     priceScaleMode: view.priceScaleMode,
     priceScaleInverted: inverted,
     renderer: rendererMode,
-    indicators: active.listIndicators().map((i) => ({ id: i.id, params: i.params })),
+    indicators: active.listIndicators().map((i) => ({
+      id: i.id,
+      params: i.params,
+      styles: i.styles,
+    })),
     drawings: active.drawings.list().length > 0 ? active.drawings.toJSON() : null,
     barSpacing: view.barSpacing,
     scrollPosition: view.scrollPosition,
@@ -891,7 +970,11 @@ function snapshotState(): HistoryState | null {
   if (active === null) return null;
   return {
     drawings: active.drawings.toJSON(),
-    indicators: active.listIndicators().map((i) => ({ id: i.id, params: i.params })),
+    indicators: active.listIndicators().map((i) => ({
+      id: i.id,
+      params: i.params,
+      styles: i.styles,
+    })),
   };
 }
 
@@ -906,7 +989,7 @@ function applyState(state: HistoryState): void {
   if (active === null) return;
   active.drawings.loadJSON(state.drawings);
   for (const existing of active.listIndicators()) active.removeIndicator(existing.handleId);
-  for (const entry of state.indicators) active.addIndicator(entry.id, entry.params);
+  for (const entry of state.indicators) active.addIndicator(entry.id, entry.params, entry.styles);
   renderLegend(null);
   status();
 }

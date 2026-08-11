@@ -15,6 +15,7 @@ import { CHART_TYPES, type ChartType } from '../charts/types.js';
 import { INDICATOR_IDS } from '../indicators/registry.js';
 import type { IndicatorId, IndicatorParams } from '../indicators/types.js';
 import { TIMEFRAMES, type PriceScaleMode, type Timeframe } from '../data/types.js';
+import type { PlotStyles, PlotStyleOverride } from '../renderer/layers/annotationsLayer.js';
 
 const KEY = 'tdv-shadow.workspace';
 const VERSION = 1;
@@ -27,7 +28,11 @@ export interface Workspace {
   /** §2.1 price-axis inversion. */
   readonly priceScaleInverted: boolean;
   readonly renderer: 'canvas2d' | 'webgl';
-  readonly indicators: readonly { readonly id: IndicatorId; readonly params: IndicatorParams }[];
+  readonly indicators: readonly {
+    readonly id: IndicatorId;
+    readonly params: IndicatorParams;
+    readonly styles: PlotStyles;
+  }[];
   /** Serialised drawing store, or null when there are none. */
   readonly drawings: string | null;
   readonly barSpacing: number;
@@ -42,6 +47,37 @@ const isIndicatorId = (value: unknown): value is IndicatorId =>
   typeof value === 'string' && (INDICATOR_IDS as readonly string[]).includes(value);
 const isParams = (value: unknown): value is IndicatorParams =>
   typeof value === 'object' && value !== null;
+
+/**
+ * Per-plot style overrides, field by field. A saved colour is applied to a canvas
+ * `strokeStyle`, so an unvalidated string from localStorage would be handed straight to
+ * the renderer; anything that is not a plain colour-ish string is dropped instead.
+ */
+function readStyles(value: unknown): PlotStyles {
+  if (typeof value !== 'object' || value === null) return {};
+  const out: Record<string, PlotStyleOverride> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const entry = raw as Record<string, unknown>;
+    const override: {
+      color?: string;
+      lineWidth?: number;
+      dash?: number[];
+    } = {};
+    const color = entry['color'];
+    if (typeof color === 'string' && /^#[0-9a-f]{3,8}$/i.test(color)) override.color = color;
+    const lineWidth = entry['lineWidth'];
+    if (typeof lineWidth === 'number' && lineWidth > 0 && lineWidth <= 8) {
+      override.lineWidth = lineWidth;
+    }
+    const dash = entry['dash'];
+    if (Array.isArray(dash) && dash.every((n) => typeof n === 'number' && n >= 0)) {
+      override.dash = dash as number[];
+    }
+    if (Object.keys(override).length > 0) out[key] = override;
+  }
+  return out;
+}
 
 export function saveWorkspace(workspace: Workspace): void {
   try {
@@ -99,6 +135,7 @@ export function loadWorkspace(): Workspace | null {
         {
           id: item['id'],
           params: isParams(params) ? params : {},
+          styles: readStyles(item['styles']),
         },
       ];
     }),

@@ -12,11 +12,16 @@
  */
 
 import type { IndicatorId, IndicatorParams } from '../indicators/types.js';
+import type { PlotStyles } from '../renderer/layers/annotationsLayer.js';
 
 export interface HistoryState {
   /** Serialised drawing store. */
   readonly drawings: string;
-  readonly indicators: readonly { readonly id: IndicatorId; readonly params: IndicatorParams }[];
+  readonly indicators: readonly {
+    readonly id: IndicatorId;
+    readonly params: IndicatorParams;
+    readonly styles: PlotStyles;
+  }[];
 }
 
 export interface History {

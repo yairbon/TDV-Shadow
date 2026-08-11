@@ -449,6 +449,86 @@
         color: var(--down);
       }
 
+      /* ---------- settings sheets ---------- */
+      dialog.sheet {
+        width: min(400px, 92vw);
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        box-shadow: 0 24px 64px rgb(0 0 0 / 60%);
+      }
+      dialog.sheet::backdrop {
+        background: rgb(0 0 0 / 45%);
+      }
+      dialog.sheet h2 {
+        margin: 0 0 12px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      dialog.sheet h3 {
+        margin: 16px 0 8px;
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+      }
+      dialog.sheet .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      dialog.sheet label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        color: var(--text-dim);
+      }
+      dialog.sheet input,
+      dialog.sheet select {
+        height: 30px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--text);
+        font: inherit;
+      }
+      dialog.sheet input[type='color'] {
+        width: 34px;
+        padding: 2px;
+        cursor: pointer;
+      }
+      dialog.sheet input[type='checkbox'] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--accent);
+      }
+      dialog.sheet .style-row {
+        display: grid;
+        grid-template-columns: 1fr 34px 64px 96px;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      dialog.sheet .style-row .nm {
+        font-size: 12px;
+      }
+      dialog.sheet .row-end {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 18px;
+      }
+      dialog.sheet .tb.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+
       /* ---------- context menu ---------- */
       .ctx {
         position: fixed;

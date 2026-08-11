@@ -32,6 +32,23 @@ export interface PlotScale {
   y(value: number): number;
 }
 
+/**
+ * Per-plot appearance chosen by the user, keyed by `PlotSpec.key`.
+ *
+ * An override is exactly the three things a settings dialog can change; everything else
+ * about a plot still comes from the indicator's own declaration. An absent entry, or an
+ * absent field within one, falls back to the theme token — so the default look is defined
+ * in one place and an override is genuinely an override.
+ */
+export interface PlotStyleOverride {
+  /** Explicit CSS colour. Wins over `PlotSpec.colorToken`. */
+  readonly color?: string;
+  readonly lineWidth?: number;
+  readonly dash?: readonly number[];
+}
+
+export type PlotStyles = Readonly<Record<string, PlotStyleOverride>>;
+
 export interface OverlayInput {
   readonly plot: Rect;
   readonly theme: Theme;
@@ -54,9 +71,11 @@ function strokePlot(
   input: OverlayInput,
   scale: PlotScale,
   color: string,
+  override: PlotStyleOverride = {},
 ): void {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = override.color ?? color;
+  ctx.lineWidth = override.lineWidth ?? 1.5;
+  ctx.setLineDash(override.dash === undefined ? [] : [...override.dash]);
   ctx.beginPath();
   let drawing = false;
   for (let i = input.from; i <= input.to; i++) {
@@ -72,6 +91,7 @@ function strokePlot(
     drawing = true;
   }
   ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 function fillHistogram(
@@ -99,12 +119,13 @@ export function drawIndicatorOverlay(
   result: IndicatorResult,
   input: OverlayInput,
   scale: PlotScale,
+  styles: PlotStyles = {},
 ): void {
   clip(ctx, input.plot);
   for (const plot of result.plots) {
     const values = result.values[plot.key];
     if (plot.style === 'histogram') continue;
-    strokePlot(ctx, values, input, scale, resolveToken(input.theme, plot.colorToken));
+    strokePlot(ctx, values, input, scale, resolveToken(input.theme, plot.colorToken), styles[plot.key]);
   }
   ctx.restore();
 }
@@ -154,6 +175,7 @@ export function drawIndicatorPane(
   input: OverlayInput,
   pane: Rect,
   barWidth: number,
+  styles: PlotStyles = {},
 ): void {
   // Pane scale: fixed bounds when the indicator declares them (RSI 0..100), else
   // autoscale over the visible values only.
@@ -208,7 +230,7 @@ export function drawIndicatorPane(
       fillHistogram(ctx, values, input, scale, input.theme, barWidth);
       continue;
     }
-    strokePlot(ctx, values, input, scale, resolveToken(input.theme, plot.colorToken));
+    strokePlot(ctx, values, input, scale, resolveToken(input.theme, plot.colorToken), styles[plot.key]);
   }
 
   ctx.restore();
