@@ -9,8 +9,9 @@
 
 import { createChart, type Chart, type RendererMode } from './app/bootstrap.js';
 import { generateBars, lcg, nextTick } from './app/feed.js';
+import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { installControlApi } from './app/control.js';
-import type { PriceScaleMode, Timeframe } from './data/types.js';
+import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
 import { INDICATOR_IDS } from './indicators/registry.js';
 import { TOOL_DEFINITIONS } from './drawings/tools.js';
@@ -38,10 +39,28 @@ if (chartHost === null) throw new Error('#chart container is missing from index.
 // the hoisted `build` declaration below, and mandate #6 rules out a `!`.
 const container: HTMLElement = chartHost;
 
-const tf = (params.get('tf') ?? '1m') as Timeframe;
 const seed = num('seed', 7);
-const bars = generateBars({ seed, count: num('bars', 400), tf });
-const symbol = params.get('sym') ?? 'BTCUSD';
+
+/**
+ * Resolves a symbol to its bars. Real symbols come from the baked Alpha Vantage
+ * snapshot; DEMO stays synthetic because the visual regression fixtures depend on a
+ * deterministic 400-bar 1m series that never changes.
+ */
+function loadSymbol(name: string): { bars: Bar[]; timeframe: Timeframe; live: boolean } {
+  const definition = findSymbol(name);
+  if (definition === null || definition.source === 'synthetic') {
+    const timeframe = (params.get('tf') ?? definition?.timeframe ?? '1m') as Timeframe;
+    return { bars: generateBars({ seed, count: num('bars', 400), tf: timeframe }), timeframe, live: true };
+  }
+  // Real daily history is a fixed snapshot: appending fake ticks to it would be inventing
+  // market data, so live ticking is off for these.
+  return { bars: parseDailyCsv(definition.csv ?? ''), timeframe: definition.timeframe, live: false };
+}
+
+let symbol = params.get('sym') ?? 'DEMO';
+let loaded = loadSymbol(symbol);
+let tf: Timeframe = loaded.timeframe;
+let bars: Bar[] = loaded.bars;
 
 let rendererMode: RendererMode = num('gl', 0) === 1 ? 'webgl' : 'canvas2d';
 let scaleMode: PriceScaleMode = params.get('scale') === 'log' ? 'log' : 'linear';
@@ -55,6 +74,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     symbol,
     tf,
     bars,
+    pricePrecision: 2,
     barSpacing: barSpacing ?? num('spacing', 8),
     renderer: rendererMode,
     priceScaleMode: scaleMode,
@@ -62,10 +82,39 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   });
   window.__chartGeometry = () => chart?.geometry() ?? null;
   window.__chart = chart;
-  installControlApi(() => chart, { symbol, timeframe: tf });
+  installControlApi(() => chart, {
+    symbol,
+    timeframe: tf,
+    switchSymbol: (next) => {
+      switchSymbol(next);
+      const picker = document.querySelector<HTMLSelectElement>('#symbol-pick');
+      if (picker !== null) picker.value = next;
+    },
+    available: SYMBOLS.map((s) => s.symbol),
+  });
 }
 
 build();
+
+/**
+ * Switching symbol rebuilds the chart: a Series is created with its symbol, timeframe
+ * and bars, and the store is append-only by design (mandate #4), so swapping the whole
+ * series is the honest operation rather than mutating one in place.
+ */
+function switchSymbol(next: string): void {
+  symbol = next;
+  loaded = loadSymbol(next);
+  bars = loaded.bars;
+  tf = loaded.timeframe;
+  setLive(false);
+  build();
+  const heading = document.querySelector('#symbol');
+  if (heading !== null) heading.textContent = `${symbol} · ${tf}`;
+  const liveButton = document.querySelector<HTMLButtonElement>('#live-toggle');
+  // Real history is a fixed snapshot; ticking it would be inventing market data.
+  if (liveButton !== null) liveButton.disabled = !loaded.live;
+  status();
+}
 
 // --- toolbar ---------------------------------------------------------------
 
@@ -270,3 +319,19 @@ container.addEventListener('click', (event) => {
 });
 
 status();
+
+const symbolSelect = document.querySelector<HTMLSelectElement>('#symbol-pick');
+if (symbolSelect !== null) {
+  for (const definition of SYMBOLS) {
+    const option = document.createElement('option');
+    option.value = definition.symbol;
+    option.textContent = definition.label;
+    symbolSelect.append(option);
+  }
+  symbolSelect.value = symbol;
+  symbolSelect.addEventListener('change', () => {
+    switchSymbol(symbolSelect.value);
+  });
+}
+
+switchSymbol(symbol);

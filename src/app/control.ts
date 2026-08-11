@@ -31,6 +31,10 @@ import { candleGeometry } from '../renderer/scale/timeScale.js';
 export interface ControlContext {
   symbol: string;
   timeframe: Timeframe;
+  /** Swaps the loaded series. Supplied by main.ts, which owns chart construction. */
+  switchSymbol?: (symbol: string) => void;
+  /** Symbols this build can actually load. */
+  available?: readonly string[];
 }
 
 export function installControlApi(getChart: () => Chart | null, context: ControlContext): void {
@@ -156,9 +160,17 @@ export function installControlApi(getChart: () => Chart | null, context: Control
     },
 
     setSymbol(symbol: string, timeframe?: Timeframe): ChartState {
-      // Only the labels change: this build has no data backend to fetch a new instrument
-      // from, and silently returning the same bars under a new name would be a lie the
-      // agent could not detect. Stated in the contract rather than faked.
+      const switcher = context.switchSymbol;
+      const known = context.available ?? [];
+      if (switcher === undefined || !known.includes(symbol)) {
+        // Refuse rather than relabel. Returning the previous bars under a new name is a
+        // lie the calling agent cannot detect; an error naming the loadable symbols is
+        // something it can act on.
+        throw new Error(
+          `unknown symbol '${symbol}'. This build ships a fixed snapshot; available: ${known.join(', ')}`,
+        );
+      }
+      switcher(symbol);
       context.symbol = symbol;
       if (timeframe !== undefined) context.timeframe = timeframe;
       return state();
