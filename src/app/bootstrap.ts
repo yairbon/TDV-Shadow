@@ -10,13 +10,33 @@
 import { createSeriesStore, type SeriesStore } from '../data/store/seriesStore.js';
 import { createSnapshotSource, type SnapshotSource } from '../data/store/snapshot.js';
 import { createViewStore, type ViewStore } from '../data/store/viewStore.js';
-import { asBarIndex, type Bar, type PriceScaleMode, type Timeframe } from '../data/types.js';
+import { asBarIndex, asPixel, asPrice, type Bar, type PriceScaleMode, type Timeframe } from '../data/types.js';
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { computeLayout, type Layout, type Rect } from '../renderer/layout.js';
 import { candleGeometry } from '../renderer/scale/timeScale.js';
 import { maxVolume } from '../renderer/scale/volumeScale.js';
 import { createGlSeriesLayer } from '../renderer/webgl/glSeriesLayer.js';
+import { drawDerivedSeries } from '../renderer/layers/derivedSeriesLayer.js';
+import {
+  drawDrawings,
+  drawIndicatorOverlay,
+  drawIndicatorPane,
+  drawVolumeProfile,
+} from '../renderer/layers/annotationsLayer.js';
+import { buildGeometry, type DrawingGeometry } from '../drawings/geometry.js';
+import { snapPixel, type SnapResult } from '../drawings/magnet.js';
+import type { Anchor, MagnetMode } from '../drawings/types.js';
+import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
+import type { ChartType, ChartTypeParams } from '../charts/types.js';
+import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
+import {
+  createFeatureState,
+  createIndicatorMemo,
+  createSeriesMemo,
+  splitByPlacement,
+  type ActiveIndicator,
+} from './features.js';
 import { createChartRenderer, type LayerContexts } from '../renderer/index.js';
 import { createScheduler, DirtyFlags, type DirtyMask } from '../renderer/scheduler.js';
 import { createSurface, type Surface } from '../renderer/surface.js';
@@ -42,6 +62,7 @@ export interface ChartOptions {
   readonly priceScaleMode?: PriceScaleMode;
   /** Restores pan/zoom across a renderer swap, which has to rebuild the chart. */
   readonly scrollPosition?: number;
+  readonly chartType?: ChartType;
 }
 
 /** Per-candle geometry actually used for the last frame — the Phase 3 assertion hook. */
@@ -64,6 +85,20 @@ export interface GeometryDump {
 
 export interface Chart {
   readonly series: SeriesStore;
+  readonly drawings: DrawingStore;
+  /** Active chart type; resampling types are excluded from the app picker (see below). */
+  chartType(): ChartType;
+  setChartType(type: ChartType, params?: ChartTypeParams): void;
+  addIndicator(id: IndicatorId, params?: IndicatorParams): ActiveIndicator;
+  removeIndicator(handleId: string): boolean;
+  listIndicators(): readonly ActiveIndicator[];
+  /** Geometry of every drawing in the last frame — used for anchor verification. */
+  drawingGeometry(): readonly DrawingGeometry[];
+  /** CSS pixel (relative to the container) -> data-space anchor, with optional magnet. */
+  pickAnchor(x: number, y: number, magnet?: MagnetMode): SnapResult;
+  /** Data-space anchor -> CSS pixel, through the live scales. */
+  projectAnchor(anchor: Anchor): { readonly x: number; readonly y: number };
+  readonly layout: () => Layout;
   readonly view: ViewStore;
   readonly snapshots: SnapshotSource;
   /** Applies a live tick and schedules a repaint. Never draws. */
@@ -98,6 +133,14 @@ export function createChart(o: ChartOptions): Chart {
   const snapshots = createSnapshotSource(series, view);
   const renderer = createChartRenderer();
   const autoscaleCache = createAutoscaleCache();
+
+  const features = createFeatureState();
+  features.chartType = o.chartType ?? 'candles';
+  const drawings = createDrawingStore();
+  const seriesMemo = createSeriesMemo();
+  const indicatorMemo = createIndicatorMemo();
+  let handleCounter = 0;
+  let lastGeometry: readonly DrawingGeometry[] = [];
 
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
@@ -196,6 +239,64 @@ export function createChart(o: ChartOptions): Chart {
     });
   };
 
+  /**
+   * Indicator plots and drawings, painted onto the overlay layer AFTER the renderer has
+   * cleared it. Pane indicators take over the volume pane rect: one pane at a time keeps
+   * the layout honest without inventing a pane-stacking system the layout does not have.
+   */
+  const drawAnnotations = (input: FrameInput, mask: DirtyMask): void => {
+    if ((mask & DirtyFlags.Overlay) === 0) return;
+    const ctx = surfaces.overlay.ctx;
+    const bars = input.snapshot.series.bars;
+    const revision = input.snapshot.revision;
+
+    const overlayInput = {
+      plot: input.layout.plot,
+      theme,
+      from: input.visible.from,
+      to: input.visible.to,
+      x: (i: number) => input.timeScale.x(asBarIndex(i)),
+    };
+    const priceScale = { y: (value: number) => input.priceScale.y(asPrice(value)) };
+
+    const { overlays, panes } = splitByPlacement(features.indicators, (indicator) =>
+      indicatorMemo(indicator.handleId, revision, indicator.id, indicator.params, bars),
+    );
+
+    for (const { result } of overlays) {
+      if (result.id === 'volume-profile') {
+        drawVolumeProfile(ctx, result as VolumeProfileResult, overlayInput, priceScale);
+        continue;
+      }
+      drawIndicatorOverlay(ctx, result, overlayInput, priceScale);
+    }
+
+    const pane = input.layout.volume;
+    if (pane !== null && panes.length > 0) {
+      // The built-in volume columns own this rect. Painting an indicator on top of them
+      // puts two different value scales in one box — the line looks like it is measuring
+      // the columns when it is not. Cover the rect first so the pane reads as one chart.
+      ctx.save();
+      ctx.fillStyle = theme.background;
+      ctx.fillRect(pane.left, pane.top, pane.width, pane.height);
+      ctx.restore();
+
+      const geometry = candleGeometry(input.timeScale.barSpacing);
+      drawIndicatorPane(ctx, panes[0].result, overlayInput, pane, geometry.width);
+    }
+
+    const geometries = drawings.list().map((drawing) =>
+      buildGeometry(
+        drawing,
+        { y: (price) => input.priceScale.y(asPrice(price)), price: (y) => input.priceScale.price(asPixel(y)) },
+        { x: (i) => input.timeScale.x(asBarIndex(i)), indexAt: (x) => input.timeScale.indexAt(asPixel(x)) },
+        input.layout.plot,
+      ),
+    );
+    lastGeometry = geometries;
+    drawDrawings(ctx, geometries, input.layout.plot, theme, drawings.selected());
+  };
+
   // --- the single draw entrypoint ----------------------------------------
   const frame = (mask: DirtyMask): void => {
     const input = buildFrameInput({
@@ -208,12 +309,35 @@ export function createChart(o: ChartOptions): Chart {
       priceRange: null,
       autoscaleCache,
     });
+    const snapshot = input.snapshot;
+    const bars = snapshot.series.bars;
+    const derived = seriesMemo(snapshot.revision, features.chartType, features.chartParams, bars);
+    // The built-in series layer draws candles from the raw bars. Any other chart type is
+    // drawn here instead, so its Series bit is stripped exactly as the GL path does.
+    const customSeries = features.chartType !== 'candles';
+
     if (glLayer === null) {
-      renderer.render(mask, contexts, input);
+      renderer.render(customSeries ? mask & ~DirtyFlags.Series : mask, contexts, input);
     } else {
       renderer.render(mask & ~DirtyFlags.Series, contexts, input);
-      if ((mask & DirtyFlags.Series) !== 0) drawGlSeries(input);
+      if ((mask & DirtyFlags.Series) !== 0 && !customSeries) drawGlSeries(input);
     }
+
+    if (customSeries && (mask & DirtyFlags.Series) !== 0 && surfaces.series !== null) {
+      drawDerivedSeries(surfaces.series.ctx, {
+        series: derived,
+        plot: input.layout.plot,
+        theme,
+        // Derived index space: for resampling types the Nth brick is not the Nth bar.
+        x: (i) => input.timeScale.x(asBarIndex(i)),
+        y: (price) => input.priceScale.y(asPrice(price)),
+        barSpacing: input.timeScale.barSpacing,
+        from: derived.preservesIndexSpace ? input.visible.from : 0,
+        to: derived.preservesIndexSpace ? input.visible.to : derived.bars.length - 1,
+      });
+    }
+
+    drawAnnotations(input, mask);
     lastInput = input;
     frameCount += 1;
     o.container.dispatchEvent(
@@ -282,6 +406,52 @@ export function createChart(o: ChartOptions): Chart {
     series,
     view,
     snapshots,
+    drawings,
+    chartType: () => features.chartType,
+    setChartType(type, params) {
+      features.chartType = type;
+      features.chartParams = params ?? {};
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    addIndicator(id, params = {}) {
+      handleCounter += 1;
+      const indicator: ActiveIndicator = { handleId: `i${String(handleCounter)}`, id, params };
+      features.indicators = [...features.indicators, indicator];
+      scheduler.invalidate(DirtyFlags.All);
+      return indicator;
+    },
+    removeIndicator(handleId) {
+      const next = features.indicators.filter((i) => i.handleId !== handleId);
+      if (next.length === features.indicators.length) return false;
+      features.indicators = next;
+      scheduler.invalidate(DirtyFlags.All);
+      return true;
+    },
+    listIndicators: () => features.indicators,
+    drawingGeometry: () => lastGeometry,
+    pickAnchor(x, y, magnet = 'off') {
+      const input = lastInput;
+      if (input === null) {
+        return { anchor: { barIndex: 0, price: 0 }, target: null, barIndex: -1 };
+      }
+      return snapPixel(
+        x,
+        y,
+        input.snapshot.series.bars,
+        magnet,
+        { y: (price) => input.priceScale.y(asPrice(price)), price: (py) => input.priceScale.price(asPixel(py)) },
+        { x: (i) => input.timeScale.x(asBarIndex(i)), indexAt: (px) => input.timeScale.indexAt(asPixel(px)) },
+      );
+    },
+    projectAnchor(anchor) {
+      const input = lastInput;
+      if (input === null) return { x: 0, y: 0 };
+      return {
+        x: input.timeScale.x(asBarIndex(anchor.barIndex)),
+        y: input.priceScale.y(asPrice(anchor.price)),
+      };
+    },
+    layout: () => layout,
     pushTick(bar: Bar): void {
       if (series.replaceLast(bar)) scheduler.invalidate(DirtyFlags.Series | DirtyFlags.Overlay);
     },

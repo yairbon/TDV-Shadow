@@ -9,7 +9,12 @@
 
 import { createChart, type Chart, type RendererMode } from './app/bootstrap.js';
 import { generateBars, lcg, nextTick } from './app/feed.js';
+import { installControlApi } from './app/control.js';
 import type { PriceScaleMode, Timeframe } from './data/types.js';
+import type { ChartType } from './charts/types.js';
+import { INDICATOR_IDS } from './indicators/registry.js';
+import { TOOL_DEFINITIONS } from './drawings/tools.js';
+import type { DrawingKind, MagnetMode } from './drawings/types.js';
 
 declare global {
   interface Window {
@@ -57,6 +62,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   });
   window.__chartGeometry = () => chart?.geometry() ?? null;
   window.__chart = chart;
+  installControlApi(() => chart, { symbol, timeframe: tf });
 }
 
 build();
@@ -130,3 +136,137 @@ document.querySelector('#live-toggle')?.addEventListener('click', () => {
 });
 
 setLive(num('live', 0) === 1);
+
+// --- Phase 5 controls ------------------------------------------------------
+
+/**
+ * The picker lists only INDEX-PRESERVING chart types.
+ *
+ * Renko, Kagi, Point & Figure, Line Break and Range are implemented and tested, and are
+ * reachable through the registry and the MCP `chart_set_type` tool. They are held back
+ * from this picker on purpose: they emit their own bar count, so their bricks index a
+ * different space from the time axis, which is still labelled from the source series. A
+ * user-facing chart with a confidently wrong time axis is worse than one type fewer, and
+ * fixing it means teaching the axis to label through `sourceIndex`.
+ */
+const PICKABLE_TYPES: readonly ChartType[] = [
+  'candles',
+  'hollow-candles',
+  'bars',
+  'line',
+  'area',
+  'baseline',
+  'step-line',
+  'columns',
+  'heikin-ashi',
+];
+
+const typeSelect = document.querySelector<HTMLSelectElement>('#chart-type');
+if (typeSelect !== null) {
+  for (const type of PICKABLE_TYPES) {
+    const option = document.createElement('option');
+    option.value = type;
+    option.textContent = type.replace(/-/g, ' ');
+    typeSelect.append(option);
+  }
+  typeSelect.addEventListener('change', () => {
+    chart?.setChartType(typeSelect.value as ChartType);
+    status();
+  });
+}
+
+const indicatorSelect = document.querySelector<HTMLSelectElement>('#indicator-pick');
+if (indicatorSelect !== null) {
+  for (const id of INDICATOR_IDS) {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = id.replace(/-/g, ' ');
+    indicatorSelect.append(option);
+  }
+}
+
+document.querySelector('#indicator-add')?.addEventListener('click', () => {
+  const id = indicatorSelect?.value;
+  if (id === undefined) return;
+  chart?.addIndicator(id as (typeof INDICATOR_IDS)[number]);
+  status();
+});
+
+document.querySelector('#indicator-clear')?.addEventListener('click', () => {
+  for (const indicator of chart?.listIndicators() ?? []) chart?.removeIndicator(indicator.handleId);
+  status();
+});
+
+const toolSelect = document.querySelector<HTMLSelectElement>('#tool-pick');
+if (toolSelect !== null) {
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'none';
+  toolSelect.append(none);
+  for (const definition of Object.values(TOOL_DEFINITIONS)) {
+    const option = document.createElement('option');
+    option.value = definition.kind;
+    option.textContent = definition.label;
+    toolSelect.append(option);
+  }
+  toolSelect.addEventListener('change', () => {
+    pending = [];
+    status();
+  });
+}
+
+let magnet: MagnetMode = 'off';
+const magnetButton = document.querySelector<HTMLButtonElement>('#magnet-toggle');
+magnetButton?.addEventListener('click', () => {
+  magnet = magnet === 'off' ? 'strong' : 'off';
+  magnetButton.setAttribute('aria-pressed', String(magnet !== 'off'));
+  status();
+});
+
+document.querySelector('#draw-clear')?.addEventListener('click', () => {
+  chart?.drawings.clear();
+  pending = [];
+  status();
+});
+
+/** Anchors collected so far for the drawing being placed. */
+let pending: { barIndex: number; price: number }[] = [];
+
+function status(): void {
+  const element = document.querySelector('#status');
+  if (element === null) return;
+  const kind = toolSelect?.value ?? '';
+  const indicators = chart?.listIndicators().length ?? 0;
+  const shapes = chart?.drawings.list().length ?? 0;
+  const placing =
+    kind === ''
+      ? ''
+      : ` · placing ${kind} ${String(pending.length)}/${String(TOOL_DEFINITIONS[kind as DrawingKind].anchorCount)}`;
+  element.textContent = `${String(indicators)} ind · ${String(shapes)} draw${placing}`;
+}
+
+// Placement runs on click, and a click that followed a drag is a pan, not a placement.
+let downAt: { x: number; y: number } | null = null;
+container.addEventListener('pointerdown', (event) => {
+  downAt = { x: event.clientX, y: event.clientY };
+});
+
+container.addEventListener('click', (event) => {
+  const kind = toolSelect?.value ?? '';
+  if (kind === '' || chart === null) return;
+  const start = downAt;
+  if (start !== null && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return;
+
+  const rect = container.getBoundingClientRect();
+  const snapped = chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, magnet);
+  pending = [...pending, snapped.anchor];
+
+  const needed = TOOL_DEFINITIONS[kind as DrawingKind].anchorCount;
+  if (pending.length >= needed) {
+    chart.drawings.add(kind as DrawingKind, pending);
+    pending = [];
+  }
+  status();
+});
+
+status();
