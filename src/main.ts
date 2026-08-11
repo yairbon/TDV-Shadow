@@ -10,6 +10,7 @@
 import { createChart, type Chart, type RendererMode } from './app/bootstrap.js';
 import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
+import { fetchDailySeries } from './app/liveData.js';
 import { installControlApi } from './app/control.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
@@ -335,3 +336,49 @@ if (symbolSelect !== null) {
 }
 
 switchSymbol(symbol);
+
+// --- load an arbitrary ticker ----------------------------------------------
+// Only possible where the page has network access AND a key: the published artifact is
+// sandboxed by CSP, so this path fails closed there and says why in the status line.
+
+const symbolInput = document.querySelector<HTMLInputElement>('#symbol-input');
+
+async function loadTicker(ticker: string): Promise<void> {
+  const element = document.querySelector('#status');
+  const name = ticker.trim().toUpperCase();
+  if (name === '') return;
+
+  const known = findSymbol(name);
+  if (known !== null) {
+    switchSymbol(name);
+    const picker = document.querySelector<HTMLSelectElement>('#symbol-pick');
+    if (picker !== null) picker.value = name;
+    return;
+  }
+
+  if (element !== null) element.textContent = `loading ${name}…`;
+  const result = await fetchDailySeries(name, params.get('apikey') ?? '');
+  if (!result.ok) {
+    // Keep the current chart. Blanking it, or relabelling the old bars, would both be
+    // worse than saying the load failed.
+    if (element !== null) element.textContent = `${name}: ${result.reason}`;
+    return;
+  }
+
+  symbol = name;
+  bars = [...result.bars];
+  tf = '1d';
+  loaded = { bars, timeframe: tf, live: false };
+  setLive(false);
+  build();
+  const heading = document.querySelector('#symbol');
+  if (heading !== null) heading.textContent = `${symbol} · ${tf} (live fetch)`;
+  status();
+}
+
+document.querySelector('#symbol-load')?.addEventListener('click', () => {
+  void loadTicker(symbolInput?.value ?? '');
+});
+symbolInput?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') void loadTicker(symbolInput.value);
+});

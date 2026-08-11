@@ -35,11 +35,19 @@
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 0 12px;
-        height: 40px;
-        flex: 0 0 40px;
+        padding: 6px 12px;
+        flex: 0 0 auto;
         background: var(--chrome);
         border-bottom: 1px solid #21262d;
+        /* Horizontal scroll rather than wrap: the chart keeps its height on a phone,
+           and a swipe along the toolbar reaches every control. */
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      #toolbar::-webkit-scrollbar {
+        display: none;
       }
       #symbol {
         font-weight: 600;
@@ -87,6 +95,17 @@
       .seg button:hover:not([aria-pressed='true']) {
         background: #21262d;
       }
+      input[type='text'] {
+        width: 5.5rem;
+        background: #0d1117;
+        color: var(--text);
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        font: inherit;
+        font-size: 12px;
+        padding: 4px 8px;
+        text-transform: uppercase;
+      }
       select,
       .btn {
         appearance: none;
@@ -107,10 +126,7 @@
         border-color: #1f6feb;
         color: #fff;
       }
-      #toolbar {
-        overflow-x: auto;
-        white-space: nowrap;
-      }
+
       #status {
         opacity: 0.75;
         font-size: 12px;
@@ -120,6 +136,36 @@
         flex: 1 1 auto;
         min-height: 0;
         position: relative;
+        /* Without this the browser claims every drag and pinch for page scroll and
+           browser zoom, and the chart never sees the gesture. */
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      /* Phones: bigger tap targets (44px is the accessible minimum), and the hint text
+         is dropped because it describes a mouse. */
+      @media (max-width: 760px), (pointer: coarse) {
+        #toolbar {
+          gap: 8px;
+          padding: 6px 8px;
+        }
+        .group > label {
+          display: none;
+        }
+        select,
+        .btn,
+        .seg button {
+          min-height: 34px;
+          padding: 6px 10px;
+          font-size: 13px;
+        }
+        #hint {
+          display: none;
+        }
+        #symbol {
+          font-size: 12px;
+        }
       }
     </style>
   </head>
@@ -150,6 +196,9 @@
         <span class="group">
           <label for="symbol-pick">Symbol</label>
           <select id="symbol-pick"></select>
+          <input id="symbol-input" type="text" inputmode="text" autocapitalize="characters"
+                 autocomplete="off" spellcheck="false" size="6" placeholder="Ticker" />
+          <button id="symbol-load" type="button" class="btn">Load</button>
         </span>
         <span class="group">
           <label for="chart-type">Type</label>

@@ -39,6 +39,10 @@ export function createChartCanvases(container: HTMLElement): ChartCanvases {
     // Only the top layer takes pointer events; the rest are inert.
     canvas.style.pointerEvents = name === 'crosshair' ? 'auto' : 'none';
     canvas.style.display = 'block';
+    // The canvas is the element a finger actually lands on, so it — not just the
+    // container — must decline the browser's default pan/zoom gestures, or the page
+    // scrolls instead of the chart panning.
+    canvas.style.touchAction = 'none';
     container.appendChild(canvas);
     return [name, canvas] as const;
   });
