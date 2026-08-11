@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TDV-Shadow</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0e1117;
+        --chrome: #161b22;
+        --text: #c9d1d9;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        /* The plot must never force a page scrollbar — asserted in the visual suite. */
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--text);
+        font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #app {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+      }
+      /* Chrome outside the plot is DOM. Everything inside #chart is canvas. */
+      #toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 12px;
+        height: 40px;
+        flex: 0 0 40px;
+        background: var(--chrome);
+        border-bottom: 1px solid #21262d;
+      }
+      #symbol {
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      #hint {
+        opacity: 0.55;
+        font-size: 12px;
+      }
+      #chart {
+        flex: 1 1 auto;
+        min-height: 0;
+        position: relative;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="toolbar">
+        <span id="symbol">BTCUSD · 1m</span>
+        <span id="hint">drag to pan · wheel to zoom</span>
+      </div>
+      <div id="chart"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

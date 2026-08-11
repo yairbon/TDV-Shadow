@@ -9,6 +9,9 @@ export default defineConfig({
       // into this repo's run. Excluding them keeps `npm test` a measurement of THIS
       // working tree only.
       '**/.claude/**',
+      // Playwright owns tests/visual. Vitest would happily collect those specs and
+      // fail on `@playwright/test`'s runner globals.
+      'tests/visual/**',
     ],
     include: ['tests/**/*.spec.ts'],
   },
