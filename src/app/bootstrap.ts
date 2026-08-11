@@ -45,6 +45,16 @@ import { createScheduler, DirtyFlags, type DirtyMask } from '../renderer/schedul
 import { createSurface, type Surface } from '../renderer/surface.js';
 import { DARK_THEME, type Theme } from '../renderer/theme.js';
 import { createChartCanvases, type ChartCanvases, type LayerName } from '../ui/chartCanvas.js';
+import { snapLine } from '../renderer/pixel.js';
+
+/** Indicators that render in their own pane rather than over the price plot. */
+const PANE_INDICATORS: ReadonlySet<IndicatorId> = new Set<IndicatorId>([
+  'macd',
+  'rsi',
+  'stochastic',
+  'atr',
+  'volume',
+]);
 
 export type RendererMode = 'canvas2d' | 'webgl';
 
@@ -166,16 +176,25 @@ export function createChart(o: ChartOptions): Chart {
     height: Math.max(1, o.container.clientHeight),
     ...LAYOUT_CHROME,
   });
+  let cssSize = { width: o.container.clientWidth, height: o.container.clientHeight };
   let lastInput: FrameInput | null = null;
   let frameCount = 0;
 
   // --- surfaces -----------------------------------------------------------
-  const onResize = (cssWidth: number, cssHeight: number): void => {
-    layout = computeLayout({
+  /** Pane indicators each get their own rect; the count drives the layout. */
+  const paneCount = (): number =>
+    features.indicators.filter((i) => PANE_INDICATORS.has(i.id)).length;
+
+  const relayout = (cssWidth: number, cssHeight: number): Layout =>
+    computeLayout({
       width: Math.max(1, cssWidth),
       height: Math.max(1, cssHeight),
       ...LAYOUT_CHROME,
+      extraPanes: paneCount(),
     });
+
+  const onResize = (cssWidth: number, cssHeight: number): void => {
+    layout = relayout(cssWidth, cssHeight);
     scheduler.invalidate(DirtyFlags.All); // never draws — mandate #3
   };
 
@@ -204,6 +223,7 @@ export function createChart(o: ChartOptions): Chart {
   const applySize = (cssWidth: number, cssHeight: number): void => {
     const w = Math.max(1, Math.floor(cssWidth));
     const h = Math.max(1, Math.floor(cssHeight));
+    cssSize = { width: w, height: h };
     for (const surface of liveSurfaces()) surface.resize(w, h);
     if (glLayer !== null) {
       const canvas = canvases.canvases.series;
@@ -290,18 +310,32 @@ export function createChart(o: ChartOptions): Chart {
       drawIndicatorOverlay(ctx, result, overlayInput, priceScale);
     }
 
-    const pane = input.layout.volume;
-    if (pane !== null && panes.length > 0) {
-      // The built-in volume columns own this rect. Painting an indicator on top of them
-      // puts two different value scales in one box — the line looks like it is measuring
-      // the columns when it is not. Cover the rect first so the pane reads as one chart.
+    // One rect per pane indicator, stacked under the volume pane. Panes beyond what the
+    // layout could fit are simply not drawn rather than overlapping each other.
+    const rects = input.layout.panes;
+    const geometry = candleGeometry(input.timeScale.barSpacing);
+    for (let i = 0; i < panes.length && i < rects.length; i++) {
+      const rect = rects[i];
       ctx.save();
       ctx.fillStyle = theme.background;
-      ctx.fillRect(pane.left, pane.top, pane.width, pane.height);
+      ctx.fillRect(rect.left, rect.top, rect.width, rect.height);
+      ctx.strokeStyle = theme.axisLine;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(rect.left, snapLine(rect.top));
+      ctx.lineTo(rect.left + rect.width, snapLine(rect.top));
+      ctx.stroke();
       ctx.restore();
 
-      const geometry = candleGeometry(input.timeScale.barSpacing);
-      drawIndicatorPane(ctx, panes[0].result, overlayInput, pane, geometry.width);
+      drawIndicatorPane(ctx, panes[i].result, overlayInput, rect, geometry.width);
+
+      // Pane title, so three stacked oscillators are still tellable apart.
+      ctx.save();
+      ctx.font = theme.typography.font;
+      ctx.fillStyle = theme.axisText;
+      ctx.textBaseline = 'top';
+      ctx.fillText(panes[i].indicator.id.toUpperCase(), rect.left + 6, rect.top + 4);
+      ctx.restore();
     }
 
     const geometries = drawings.list().map((drawing) =>
@@ -407,6 +441,13 @@ export function createChart(o: ChartOptions): Chart {
     scheduler.invalidate(DirtyFlags.All);
   });
 
+  // Same gap on the drawing store: adding a shape bumped its revision but scheduled no
+  // frame, so a drawing only appeared once something ELSE forced a repaint. It looked
+  // like it worked because a zoom or pan usually followed.
+  const unsubscribeDrawings = drawings.subscribe(() => {
+    scheduler.invalidate(DirtyFlags.Overlay);
+  });
+
   // --- input --------------------------------------------------------------
   const pointer: PointerBindings = bindPointer({
     target: canvases.hitTarget,
@@ -471,6 +512,7 @@ export function createChart(o: ChartOptions): Chart {
       handleCounter += 1;
       const indicator: ActiveIndicator = { handleId: `i${String(handleCounter)}`, id, params };
       features.indicators = [...features.indicators, indicator];
+      layout = relayout(cssSize.width, cssSize.height);
       scheduler.invalidate(DirtyFlags.All);
       return indicator;
     },
@@ -478,6 +520,7 @@ export function createChart(o: ChartOptions): Chart {
       const next = features.indicators.filter((i) => i.handleId !== handleId);
       if (next.length === features.indicators.length) return false;
       features.indicators = next;
+      layout = relayout(cssSize.width, cssSize.height);
       scheduler.invalidate(DirtyFlags.All);
       return true;
     },
@@ -566,6 +609,7 @@ export function createChart(o: ChartOptions): Chart {
     dispose(): void {
       containerObserver?.disconnect();
       unsubscribeView();
+      unsubscribeDrawings();
       pointer.dispose();
       scheduler.dispose();
       for (const surface of liveSurfaces()) surface.dispose();

@@ -15,6 +15,8 @@ import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { fetchDailySeries } from './app/liveData.js';
 import { installControlApi } from './app/control.js';
+import { clearWorkspace, loadWorkspace, saveWorkspace } from './app/workspace.js';
+import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
@@ -86,14 +88,30 @@ function loadSymbol(name: string): Loaded {
   };
 }
 
-let symbol = params.get('sym') ?? 'DEMO';
-let loaded = loadSymbol(symbol);
-let tf: Timeframe = loaded.timeframe;
-let bars: Bar[] = loaded.bars;
+/**
+ * A saved workspace is restored ONLY when the URL asks for nothing specific. The visual
+ * regression fixtures pin their state in the query string, and a stray localStorage entry
+ * silently changing what they render would make them meaningless.
+ */
+const pinned = params.has('sym') || params.has('spacing') || params.has('scale') || params.has('gl');
+const saved = pinned ? null : loadWorkspace();
 
-let rendererMode: RendererMode = num('gl', 0) === 1 ? 'webgl' : 'canvas2d';
-let scaleMode: PriceScaleMode = params.get('scale') === 'log' ? 'log' : 'linear';
+let symbol = params.get('sym') ?? saved?.symbol ?? 'DEMO';
+let loaded = loadSymbol(symbol);
+let tf: Timeframe = saved?.timeframe ?? loaded.timeframe;
+let bars: Bar[] = loaded.bars;
+if (saved !== null && loaded.base !== null && saved.timeframe !== '1m') {
+  const resampled = [...resample(loaded.base, '1m', saved.timeframe)];
+  if (resampled.length > 0) bars = resampled;
+}
+
+let rendererMode: RendererMode = num('gl', 0) === 1 ? 'webgl' : (saved?.renderer ?? 'canvas2d');
+let scaleMode: PriceScaleMode =
+  params.get('scale') === 'log' ? 'log' : (saved?.priceScaleMode ?? 'linear');
+let themeName: 'dark' | 'light' = 'dark';
 let chart: Chart | null = null;
+const currentChart = (): Chart | null => chart;
+let restoring = saved !== null;
 
 function build(scrollPosition?: number, barSpacing?: number): void {
   chart?.dispose();
@@ -106,6 +124,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     pricePrecision: 2,
     barSpacing: barSpacing ?? num('spacing', 8),
     renderer: rendererMode,
+    theme: themeName === 'light' ? LIGHT_THEME : DARK_THEME,
     priceScaleMode: scaleMode,
     ...(scrollPosition === undefined ? {} : { scrollPosition }),
   });
@@ -587,6 +606,30 @@ container.addEventListener('click', (event) => {
 
 build();
 switchSymbol(symbol);
+
+/**
+ * Restoration runs AFTER boot finishes, not inside build(): boot builds the chart twice
+ * (once directly, once through switchSymbol), and applying the saved state to the first
+ * chart meant the second one threw it away — indicators and drawings vanished on reload
+ * while the symbol appeared to restore fine.
+ */
+// Read through a function so TypeScript does not narrow `chart` to `never` here: it
+// cannot see that build() assigns it, and a `!` is ruled out by mandate #6.
+const booted = currentChart();
+if (restoring && saved !== null && booted !== null) {
+  restoring = false;
+  for (const entry of saved.indicators) booted.addIndicator(entry.id, entry.params);
+  if (saved.drawings !== null) booted.drawings.loadJSON(saved.drawings);
+  if (Number.isFinite(saved.scrollPosition) && saved.barSpacing > 0) {
+    booted.view.update({ barSpacing: saved.barSpacing, scrollPosition: saved.scrollPosition });
+  }
+  if (saved.chartType !== 'candles') {
+    booted.setChartType(saved.chartType);
+    const picker = sel('#chart-type');
+    if (picker !== null) picker.value = saved.chartType;
+  }
+  renderLegend(null);
+}
 if (typeSelect !== null) typeSelect.value = 'candles';
 logButton?.setAttribute('aria-pressed', String(scaleMode === 'log'));
 glButton?.setAttribute('aria-pressed', String(rendererMode === 'webgl'));
@@ -759,6 +802,67 @@ jumpButton?.addEventListener('click', () => {
 });
 
 window.setInterval(() => {
-  if (jumpButton === null || chart === null) return;
-  jumpButton.hidden = !chart.isScrolledBack();
+  if (chart === null) return;
+  if (jumpButton !== null) jumpButton.hidden = !chart.isScrolledBack();
+  // Keeps the counters honest after changes made through the control API, which never
+  // touch the toolbar handlers.
+  status();
 }, 250);
+
+// ---------------------------------------------------------------- persistence
+
+/**
+ * Saved on a debounce rather than per frame: panning fires hundreds of view updates a
+ * second and localStorage writes are synchronous.
+ */
+let saveTimer: number | null = null;
+function persist(): void {
+  if (saveTimer !== null) window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    if (chart === null) return;
+    const view = chart.view.get();
+    saveWorkspace({
+      symbol,
+      timeframe: tf,
+      chartType: chart.chartType(),
+      priceScaleMode: view.priceScaleMode,
+      renderer: rendererMode,
+      indicators: chart.listIndicators().map((i) => ({ id: i.id, params: i.params })),
+      drawings: chart.drawings.list().length > 0 ? chart.drawings.toJSON() : null,
+      barSpacing: view.barSpacing,
+      scrollPosition: view.scrollPosition,
+    });
+  }, 400);
+}
+
+window.setInterval(persist, 2000);
+window.addEventListener('beforeunload', () => {
+  if (chart === null) return;
+  const view = chart.view.get();
+  saveWorkspace({
+    symbol,
+    timeframe: tf,
+    chartType: chart.chartType(),
+    priceScaleMode: view.priceScaleMode,
+    renderer: rendererMode,
+    indicators: chart.listIndicators().map((i) => ({ id: i.id, params: i.params })),
+    drawings: chart.drawings.list().length > 0 ? chart.drawings.toJSON() : null,
+    barSpacing: view.barSpacing,
+    scrollPosition: view.scrollPosition,
+  });
+});
+
+el('#reset-workspace')?.addEventListener('click', () => {
+  clearWorkspace();
+  window.location.reload();
+});
+
+// ---------------------------------------------------------------- theme
+
+el('#theme-toggle')?.addEventListener('click', () => {
+  themeName = themeName === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset['theme'] = themeName;
+  const view = chart?.view.get();
+  build(view?.scrollPosition, view?.barSpacing);
+  persist();
+});

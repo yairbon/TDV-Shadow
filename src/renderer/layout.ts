@@ -57,6 +57,8 @@ export interface Layout {
   readonly plot: Rect;
   /** Volume subpanel (RENDER_ALGORITHMS §9), or null when there is no room for it. */
   readonly volume: Rect | null;
+  /** Extra indicator panes, top to bottom. Empty when none fit or none were asked for. */
+  readonly panes: readonly Rect[];
   /** Right-hand price axis gutter, spanning plot + volume. */
   readonly priceGutter: Rect;
   /** Bottom time axis gutter, spanning the content width. */
@@ -72,6 +74,12 @@ export interface LayoutOptions {
   readonly volumePaneFraction: number;
   readonly paneGap: number;
   readonly minPlotHeight: number;
+  /**
+   * Indicator panes stacked BELOW the volume pane, sharing the time axis. Panes are
+   * dropped from the bottom up rather than squeezed once the price plot would fall under
+   * `minPlotHeight` — a chart of unreadable slivers is worse than one with fewer panes.
+   */
+  readonly extraPanes?: number;
 }
 
 /**
@@ -102,14 +110,35 @@ export function computeLayout(o: LayoutOptions): Layout {
     }
   }
 
+  // Each extra pane takes a slice of what is left, and only if the price plot keeps at
+  // least `minPlotHeight` afterwards.
+  const requested = Math.max(0, Math.floor(o.extraPanes ?? 0));
+  const panes: Rect[] = [];
+  for (let i = 0; i < requested; i++) {
+    const paneH = Math.round(contentH * 0.16);
+    if (paneH < 1 || plotH - (paneH + gap) < o.minPlotHeight) break;
+    plotH -= paneH + gap;
+    panes.push(makeRect(0, 0, contentW, paneH));
+  }
+
+  // Positions depend on the final plot height, so lay them out after the loop settles it.
+  let cursor = plotH + gap;
+  const volume = volumeH > 0 ? makeRect(0, cursor, contentW, volumeH) : null;
+  if (volumeH > 0) cursor += volumeH + gap;
+  const placed = panes.map((pane) => {
+    const rect = makeRect(0, cursor, contentW, pane.height);
+    cursor += pane.height + gap;
+    return rect;
+  });
+
   const plot = makeRect(0, 0, contentW, plotH);
-  const volume = volumeH > 0 ? makeRect(0, plotH + gap, contentW, volumeH) : null;
 
   return Object.freeze({
     viewport: makeRect(0, 0, width, height),
     content: makeRect(0, 0, contentW, contentH),
     plot,
     volume,
+    panes: Object.freeze(placed),
     priceGutter: makeRect(contentW, 0, gutterW, contentH),
     timeGutter: makeRect(0, contentH, contentW, gutterH),
   });
