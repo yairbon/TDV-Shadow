@@ -77,6 +77,8 @@ export interface OhlcvRow {
 
 /** Result of a spatial self-check — the assertion Phase 3 runs, exposed to agents. */
 export interface IntegrityReport {
+  /** Non-transparent pixels sampled from the series layer. Zero means a blank chart. */
+  readonly painted: number;
   readonly candlesOverlap: boolean;
   readonly outsidePlot: number;
   readonly pageOverflowX: number;

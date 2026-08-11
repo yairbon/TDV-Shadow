@@ -22,6 +22,7 @@ import {
   drawDrawings,
   drawIndicatorOverlay,
   drawIndicatorPane,
+  drawLastPrice,
   drawVolumeProfile,
 } from '../renderer/layers/annotationsLayer.js';
 import { buildGeometry, type DrawingGeometry } from '../drawings/geometry.js';
@@ -295,6 +296,20 @@ export function createChart(o: ChartOptions): Chart {
     );
     lastGeometry = geometries;
     drawDrawings(ctx, geometries, input.layout.plot, theme, drawings.selected());
+
+    if (bars.length > 0) {
+      const last = bars[bars.length - 1];
+      drawLastPrice(
+        ctx,
+        last.c,
+        last.c >= last.o,
+        input.layout.plot,
+        input.layout.priceGutter,
+        theme,
+        priceScale,
+        o.pricePrecision ?? 2,
+      );
+    }
   };
 
   // --- the single draw entrypoint ----------------------------------------

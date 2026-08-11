@@ -273,3 +273,48 @@ export function drawDrawings(
   }
   ctx.restore();
 }
+
+
+/**
+ * Last-price line and axis badge — the single most-read element on a trading chart.
+ *
+ * The dashed line is clipped to the plot, but the badge deliberately is NOT: it belongs
+ * in the price gutter, which sits outside the plot rect. Clipping it would hide it.
+ */
+export function drawLastPrice(
+  ctx: CanvasRenderingContext2D,
+  price: number,
+  rising: boolean,
+  plot: Rect,
+  gutter: Rect,
+  theme: Theme,
+  scale: PlotScale,
+  precision: number,
+): void {
+  const y = snapLine(scale.y(price));
+  if (y < plot.top - 1 || y > plot.top + plot.height + 1) return;
+
+  const color = rising ? theme.upBody : theme.downBody;
+
+  clip(ctx, plot);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(plot.left, y);
+  ctx.lineTo(plot.left + plot.width, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
+
+  const label = price.toFixed(precision);
+  ctx.font = theme.typography.font;
+  ctx.textBaseline = 'middle';
+  const height = theme.density.axisLabelHeight;
+  const width = Math.max(gutter.width - 2, ctx.measureText(label).width + 12);
+
+  ctx.fillStyle = color;
+  ctx.fillRect(snapFill(gutter.left), snapFill(y - height / 2), snapFill(width), height);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(label, gutter.left + 6, y);
+}

@@ -2,15 +2,25 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230e1117'/%3E%3Crect x='3' y='5' width='3' height='7' fill='%232ea043'/%3E%3Crect x='10' y='3' width='3' height='9' fill='%23f85149'/%3E%3C/svg%3E" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23131722'/%3E%3Crect x='3' y='5' width='3' height='7' fill='%2326a69a'/%3E%3Crect x='10' y='3' width='3' height='9' fill='%23ef5350'/%3E%3C/svg%3E" />
     <title>TDV-Shadow</title>
     <style>
+      /* Palette matches the canvas theme in src/renderer/theme.ts, so the chrome and the
+         plot read as one surface rather than two apps stitched together. */
       :root {
         color-scheme: dark;
-        --bg: #0e1117;
-        --chrome: #161b22;
-        --text: #c9d1d9;
+        --bg: #131722;
+        --panel: #1e222d;
+        --panel-hover: #2a2e39;
+        --border: #2a2e39;
+        --text: #d1d4dc;
+        --text-dim: #787b86;
+        --accent: #2962ff;
+        --up: #26a69a;
+        --down: #ef5350;
+        --rail: 44px;
+        --topbar: 42px;
       }
       * {
         box-sizing: border-box;
@@ -19,213 +29,367 @@
       body {
         margin: 0;
         height: 100%;
-        /* The plot must never force a page scrollbar — asserted in the visual suite. */
         overflow: hidden;
         background: var(--bg);
         color: var(--text);
-        font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font:
+          13px/1.4 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          "Helvetica Neue",
+          Arial,
+          sans-serif;
+        -webkit-font-smoothing: antialiased;
       }
       #app {
         display: flex;
         flex-direction: column;
         height: 100%;
       }
-      /* Chrome outside the plot is DOM. Everything inside #chart is canvas. */
-      #toolbar {
+
+      /* ---------- top bar ---------- */
+      #topbar {
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding: 6px 12px;
-        flex: 0 0 auto;
-        background: var(--chrome);
-        border-bottom: 1px solid #21262d;
-        /* Horizontal scroll rather than wrap: the chart keeps its height on a phone,
-           and a swipe along the toolbar reaches every control. */
+        gap: 2px;
+        height: var(--topbar);
+        flex: 0 0 var(--topbar);
+        padding: 0 8px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--border);
         overflow-x: auto;
         overflow-y: hidden;
-        -webkit-overflow-scrolling: touch;
         scrollbar-width: none;
+        white-space: nowrap;
       }
-      #toolbar::-webkit-scrollbar {
+      #topbar::-webkit-scrollbar {
         display: none;
       }
-      #symbol {
-        font-weight: 600;
-        letter-spacing: 0.02em;
+      .divider {
+        width: 1px;
+        height: 20px;
+        background: var(--border);
+        margin: 0 6px;
+        flex: 0 0 1px;
       }
-      #hint {
-        opacity: 0.55;
-        font-size: 12px;
-        margin-left: auto;
-      }
-      .group {
-        display: flex;
+
+      /* Every clickable in the bar shares one shape, the way a real toolbar does. */
+      .tb {
+        display: inline-flex;
         align-items: center;
         gap: 6px;
-      }
-      .group > label {
-        opacity: 0.5;
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-      }
-      .seg {
-        display: inline-flex;
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        overflow: hidden;
-      }
-      .seg button {
-        appearance: none;
+        height: 30px;
+        padding: 0 8px;
         border: 0;
+        border-radius: 4px;
         background: transparent;
         color: var(--text);
         font: inherit;
-        font-size: 12px;
-        padding: 4px 10px;
+        font-size: 13px;
         cursor: pointer;
+        white-space: nowrap;
       }
-      .seg button + button {
-        border-left: 1px solid #30363d;
+      .tb:hover {
+        background: var(--panel-hover);
       }
-      .seg button[aria-pressed='true'] {
-        background: #1f6feb;
+      .tb[aria-pressed='true'] {
+        background: var(--panel-hover);
         color: #fff;
       }
-      .seg button:hover:not([aria-pressed='true']) {
-        background: #21262d;
+      .tb:focus-visible,
+      .rail button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
       }
-      input[type='text'] {
-        width: 5.5rem;
-        background: #0d1117;
-        color: var(--text);
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        font: inherit;
+      .tb svg {
+        width: 16px;
+        height: 16px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      #symbol-button {
+        font-weight: 700;
+        font-size: 14px;
+        letter-spacing: 0.01em;
+        padding-right: 10px;
+      }
+      #symbol-change {
         font-size: 12px;
-        padding: 4px 8px;
-        text-transform: uppercase;
-      }
-      select,
-      .btn {
-        appearance: none;
-        background: #0d1117;
-        color: var(--text);
-        border: 1px solid #30363d;
-        border-radius: 6px;
-        font: inherit;
-        font-size: 12px;
-        padding: 4px 8px;
-        cursor: pointer;
-      }
-      .btn:hover {
-        background: #21262d;
-      }
-      .btn[aria-pressed='true'] {
-        background: #1f6feb;
-        border-color: #1f6feb;
-        color: #fff;
-      }
-
-      #status {
-        opacity: 0.75;
-        font-size: 12px;
+        font-weight: 600;
         font-variant-numeric: tabular-nums;
       }
-      #chart {
+      .tf {
+        min-width: 30px;
+        justify-content: center;
+        padding: 0 7px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--text-dim);
+      }
+      .tf[aria-pressed='true'] {
+        color: #fff;
+      }
+      select.tb {
+        appearance: none;
+        padding-right: 22px;
+        background-image: linear-gradient(45deg, transparent 50%, var(--text-dim) 50%),
+          linear-gradient(135deg, var(--text-dim) 50%, transparent 50%);
+        background-position:
+          calc(100% - 12px) 13px,
+          calc(100% - 8px) 13px;
+        background-size:
+          4px 4px,
+          4px 4px;
+        background-repeat: no-repeat;
+      }
+      #symbol-input {
+        width: 74px;
+        height: 30px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        text-transform: uppercase;
+      }
+      #symbol-input::placeholder {
+        color: var(--text-dim);
+        text-transform: none;
+      }
+      .spacer {
+        margin-left: auto;
+      }
+      #status {
+        color: var(--text-dim);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        padding: 0 8px;
+      }
+
+      /* ---------- body: left rail + chart ---------- */
+      #body {
+        display: flex;
         flex: 1 1 auto;
         min-height: 0;
+      }
+      .rail {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        width: var(--rail);
+        flex: 0 0 var(--rail);
+        padding: 6px 0;
+        background: var(--panel);
+        border-right: 1px solid var(--border);
+        overflow-y: auto;
+        scrollbar-width: none;
+      }
+      .rail::-webkit-scrollbar {
+        display: none;
+      }
+      .rail button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        margin: 0 auto;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-dim);
+        cursor: pointer;
+      }
+      .rail button:hover {
+        background: var(--panel-hover);
+        color: var(--text);
+      }
+      .rail button[aria-pressed='true'] {
+        background: var(--accent);
+        color: #fff;
+      }
+      .rail svg {
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.5;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .rail .sep {
+        height: 1px;
+        background: var(--border);
+        margin: 4px 8px;
+      }
+
+      #chart-wrap {
         position: relative;
-        /* Without this the browser claims every drag and pinch for page scroll and
-           browser zoom, and the chart never sees the gesture. */
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      #chart {
+        position: absolute;
+        inset: 0;
         touch-action: none;
         -webkit-user-select: none;
         user-select: none;
       }
 
-      /* Phones: bigger tap targets (44px is the accessible minimum), and the hint text
-         is dropped because it describes a mouse. */
-      @media (max-width: 760px), (pointer: coarse) {
-        #toolbar {
-          gap: 8px;
-          padding: 6px 8px;
+      /* Legend text over the plot is explicitly allowed chrome (root mandate #1); the
+         candles themselves remain canvas-only. */
+      #legend {
+        position: absolute;
+        top: 8px;
+        left: 12px;
+        z-index: 20;
+        pointer-events: none;
+        font-size: 12px;
+        line-height: 1.6;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+      }
+      #legend .title {
+        font-weight: 600;
+        font-size: 13px;
+        color: var(--text);
+      }
+      #legend .muted {
+        color: var(--text-dim);
+        font-weight: 400;
+      }
+      #legend .ohlc {
+        font-variant-numeric: tabular-nums;
+        color: var(--text-dim);
+      }
+      #legend .ohlc b {
+        font-weight: 600;
+      }
+      #legend .ind {
+        font-variant-numeric: tabular-nums;
+        color: var(--text-dim);
+      }
+      .up {
+        color: var(--up);
+      }
+      .down {
+        color: var(--down);
+      }
+
+      /* ---------- phones ---------- */
+      @media (max-width: 820px), (pointer: coarse) {
+        :root {
+          --rail: 0px;
         }
-        .group > label {
+        .rail {
+          position: absolute;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          z-index: 30;
+          flex-direction: row;
+          width: auto;
+          height: 46px;
+          padding: 0 6px;
+          border-right: 0;
+          border-top: 1px solid var(--border);
+          overflow-x: auto;
+          align-items: center;
+        }
+        .rail button {
+          width: 38px;
+          height: 38px;
+          margin: 0;
+          flex: 0 0 38px;
+        }
+        .rail .sep {
+          width: 1px;
+          height: 20px;
+          margin: 0 4px;
+          flex: 0 0 1px;
+        }
+        #chart-wrap {
+          padding-bottom: 46px;
+        }
+        .tb,
+        select.tb {
+          height: 34px;
+        }
+        .hide-sm {
           display: none;
         }
-        select,
-        .btn,
-        .seg button {
-          min-height: 34px;
-          padding: 6px 10px;
-          font-size: 13px;
-        }
-        #hint {
-          display: none;
-        }
-        #symbol {
-          font-size: 12px;
+        #legend {
+          top: 6px;
+          left: 8px;
+          font-size: 11px;
         }
       }
     </style>
   </head>
   <body>
     <div id="app">
-      <div id="toolbar">
-        <span id="symbol">TDV-Shadow</span>
-        <span class="group">
-          <label for="renderer-canvas2d">Renderer</label>
-          <span class="seg" id="renderer-seg">
-            <button id="renderer-canvas2d" type="button" data-value="canvas2d" aria-pressed="true">
-              Canvas2D
-            </button>
-            <button id="renderer-webgl" type="button" data-value="webgl" aria-pressed="false">
-              WebGL
-            </button>
-          </span>
-        </span>
-        <span class="group">
-          <label for="scale-linear">Scale</label>
-          <span class="seg" id="scale-seg">
-            <button id="scale-linear" type="button" data-value="linear" aria-pressed="true">
-              Linear
-            </button>
-            <button id="scale-log" type="button" data-value="log" aria-pressed="false">Log</button>
-          </span>
-        </span>
-        <span class="group">
-          <label for="symbol-pick">Symbol</label>
-          <select id="symbol-pick"></select>
-          <input id="symbol-input" type="text" inputmode="text" autocapitalize="characters"
-                 autocomplete="off" spellcheck="false" size="6" placeholder="Ticker" />
-          <button id="symbol-load" type="button" class="btn">Load</button>
-        </span>
-        <span class="group">
-          <label for="chart-type">Type</label>
-          <select id="chart-type" title="Index-preserving types only — see the note in main.ts"></select>
-        </span>
-        <span class="group">
-          <label for="indicator-pick">Indicator</label>
-          <select id="indicator-pick"></select>
-          <button id="indicator-add" type="button" class="btn">Add</button>
-          <button id="indicator-clear" type="button" class="btn">Clear</button>
-        </span>
-        <span class="group">
-          <label for="tool-pick">Draw</label>
-          <select id="tool-pick"></select>
-          <button id="magnet-toggle" type="button" aria-pressed="false" class="btn">Magnet</button>
-          <button id="draw-clear" type="button" class="btn">Erase</button>
-        </span>
-        <span class="group">
-          <label for="live-toggle">Live</label>
-          <span class="seg">
-            <button id="live-toggle" type="button" aria-pressed="false">Off</button>
-          </span>
-        </span>
+      <div id="topbar">
+        <button id="symbol-button" class="tb" type="button" title="Loaded symbol">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M20 20l-3.5-3.5" />
+          </svg>
+          <span id="symbol-name">DEMO</span>
+          <span id="symbol-change"></span>
+        </button>
+        <select id="symbol-pick" class="tb" aria-label="Symbol"></select>
+        <input
+          id="symbol-input"
+          class="hide-sm"
+          type="text"
+          inputmode="text"
+          autocapitalize="characters"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Ticker"
+        />
+        <button id="symbol-load" class="tb hide-sm" type="button">Load</button>
+
+        <span class="divider"></span>
+        <span id="timeframes"></span>
+
+        <span class="divider"></span>
+        <select id="chart-type" class="tb" aria-label="Chart type"></select>
+
+        <span class="divider"></span>
+        <button id="indicator-add" class="tb" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 18l4-8 4 5 4-9 4 6" />
+          </svg>
+          <span class="hide-sm">Indicators</span>
+        </button>
+        <select id="indicator-pick" class="tb" aria-label="Indicator"></select>
+        <button id="indicator-clear" class="tb hide-sm" type="button">Clear</button>
+
+        <span class="divider"></span>
+        <button id="scale-log" class="tb" type="button" aria-pressed="false" title="Logarithmic price scale">log</button>
+        <button id="renderer-webgl" class="tb" type="button" aria-pressed="false" title="Render the series on the GPU">GPU</button>
+        <button id="live-toggle" class="tb" type="button" aria-pressed="false" title="Stream simulated ticks">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /></svg>
+          <span class="hide-sm">Live</span>
+        </button>
+
+        <span class="spacer"></span>
         <span id="status"></span>
-        <span id="hint">drag to pan · wheel to zoom</span>
       </div>
-      <div id="chart"></div>
+
+      <div id="body">
+        <div class="rail" id="tool-rail" role="toolbar" aria-label="Drawing tools"></div>
+        <div id="chart-wrap">
+          <div id="legend"></div>
+          <div id="chart"></div>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

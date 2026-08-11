@@ -94,6 +94,27 @@ export function installControlApi(getChart: () => Chart | null, context: Control
     };
   };
 
+  /** Non-transparent pixels on the series layer, read back from what was painted. */
+  const paintedPixels = (): number => {
+    const canvas = document.querySelector('#chart canvas[data-layer="series"]');
+    if (!(canvas instanceof HTMLCanvasElement)) return 0;
+    const ctx2d = canvas.getContext('2d');
+    let data: Uint8ClampedArray;
+    if (ctx2d !== null) {
+      data = ctx2d.getImageData(0, 0, canvas.width, canvas.height).data;
+    } else {
+      const gl = canvas.getContext('webgl2');
+      if (gl === null) return 0;
+      const buffer = new Uint8Array(canvas.width * canvas.height * 4);
+      gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, buffer);
+      data = new Uint8ClampedArray(buffer.buffer);
+    }
+    let count = 0;
+    // Step 4 pixels at a time: this is a health check, not a census.
+    for (let i = 3; i < data.length; i += 16) if (data[i] !== 0) count++;
+    return count;
+  };
+
   const rendererOf = (chart: Chart): 'canvas2d' | 'webgl' => {
     void chart;
     const canvas = document.querySelector<HTMLCanvasElement>('#chart canvas[data-layer="series"]');
@@ -117,6 +138,7 @@ export function installControlApi(getChart: () => Chart | null, context: Control
           pageOverflowY: 0,
           nonCanvasNodesInPlot: 0,
           backingStoreMatchesDpr: false,
+          painted: 0,
           ok: false,
         };
       }
@@ -148,14 +170,27 @@ export function installControlApi(getChart: () => Chart | null, context: Control
       const overflowX = document.documentElement.scrollWidth - document.documentElement.clientWidth;
       const overflowY = document.documentElement.scrollHeight - document.documentElement.clientHeight;
 
+      // A blank chart satisfies every geometry assertion above — no overlap, nothing
+      // outside the plot — so without reading the pixels back this report called an
+      // empty canvas healthy. It did exactly that once; hence this check.
+      const painted = paintedPixels();
+
       return {
+        painted,
         candlesOverlap: overlap,
         outsidePlot: outside,
         pageOverflowX: overflowX,
         pageOverflowY: overflowY,
         nonCanvasNodesInPlot: nonCanvas,
         backingStoreMatchesDpr: dprOk,
-        ok: !overlap && outside === 0 && nonCanvas === 0 && dprOk && overflowX <= 0 && overflowY <= 0,
+        ok:
+          painted > 1000 &&
+          !overlap &&
+          outside === 0 &&
+          nonCanvas === 0 &&
+          dprOk &&
+          overflowX <= 0 &&
+          overflowY <= 0,
       };
     },
 

@@ -20,7 +20,12 @@ export interface ChartCanvases {
 }
 
 export function createChartCanvases(container: HTMLElement): ChartCanvases {
-  container.style.position = 'relative';
+  // Only establish a containing block if the page has not already done so. Forcing
+  // `relative` here overwrote an author's `position: absolute; inset: 0`, which collapsed
+  // the element to zero height and rendered a perfectly blank chart.
+  if (getComputedStyle(container).position === 'static') {
+    container.style.position = 'relative';
+  }
   container.style.overflow = 'hidden';
 
   const entries = LAYER_NAMES.map((name, i) => {
