@@ -47,6 +47,44 @@
       #hint {
         opacity: 0.55;
         font-size: 12px;
+        margin-left: auto;
+      }
+      .group {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .group > label {
+        opacity: 0.5;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .seg {
+        display: inline-flex;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      .seg button {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      .seg button + button {
+        border-left: 1px solid #30363d;
+      }
+      .seg button[aria-pressed='true'] {
+        background: #1f6feb;
+        color: #fff;
+      }
+      .seg button:hover:not([aria-pressed='true']) {
+        background: #21262d;
       }
       #chart {
         flex: 1 1 auto;
@@ -59,6 +97,32 @@
     <div id="app">
       <div id="toolbar">
         <span id="symbol">BTCUSD · 1m</span>
+        <span class="group">
+          <label for="renderer-canvas2d">Renderer</label>
+          <span class="seg" id="renderer-seg">
+            <button id="renderer-canvas2d" type="button" data-value="canvas2d" aria-pressed="true">
+              Canvas2D
+            </button>
+            <button id="renderer-webgl" type="button" data-value="webgl" aria-pressed="false">
+              WebGL
+            </button>
+          </span>
+        </span>
+        <span class="group">
+          <label for="scale-linear">Scale</label>
+          <span class="seg" id="scale-seg">
+            <button id="scale-linear" type="button" data-value="linear" aria-pressed="true">
+              Linear
+            </button>
+            <button id="scale-log" type="button" data-value="log" aria-pressed="false">Log</button>
+          </span>
+        </span>
+        <span class="group">
+          <label for="live-toggle">Live</label>
+          <span class="seg">
+            <button id="live-toggle" type="button" aria-pressed="false">Off</button>
+          </span>
+        </span>
         <span id="hint">drag to pan · wheel to zoom</span>
       </div>
       <div id="chart"></div>

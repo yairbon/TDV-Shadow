@@ -43,6 +43,9 @@ uniform float uPriceMax;   // pMax
 uniform float uVolumeMax;  // vMax
 uniform float uBodyWidth;  // bw, odd, >= 1
 uniform int uPass;         // 0 wick, 1 body, 2 volume
+uniform int uScaleMode;    // 0 linear (§2), 1 logarithmic (§3)
+uniform float uLogMin;     // ln(pMin) after the §3 guard, log space
+uniform float uLogMax;     // ln(pMax) after the §3 guard, log space
 
 out float vDirection;      // >0 when close >= open
 
@@ -52,8 +55,19 @@ float snapFill(float v) {
   return floor(v + 0.5);
 }
 
-// §2 linear price -> CSS pixel. Log/percent modes stay on the Canvas2D path.
+// Price -> CSS pixel.
+//   §2 linear:  Y(p)    = P.t + (pMax - p) * P.h / (pMax - pMin)
+//   §3 log:     Ylog(p) = P.t + (ln pMax - ln p) * P.h / (ln pMax - ln pMin)
+// Percent mode is the log geometry re-based on p0 for LABELS only, so it takes the
+// same branch — the pixels are identical, only the axis text differs.
 float priceToY(float p) {
+  if (uScaleMode == 1) {
+    // §3 drops bars at p <= 0 rather than clamping; the clamp here only keeps log()
+    // defined for a value the CPU has already excluded from the visible range.
+    float lp = log(max(p, 1e-12));
+    float mLog = uPlot.w / (uLogMax - uLogMin);
+    return uPlot.y + (uLogMax - lp) * mLog;
+  }
   float m = uPlot.w / (uPriceMax - uPriceMin);
   return uPlot.y + (uPriceMax - p) * m;
 }

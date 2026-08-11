@@ -10,13 +10,13 @@
 import { createSeriesStore, type SeriesStore } from '../data/store/seriesStore.js';
 import { createSnapshotSource, type SnapshotSource } from '../data/store/snapshot.js';
 import { createViewStore, type ViewStore } from '../data/store/viewStore.js';
-import { asBarIndex, type Bar, type Timeframe } from '../data/types.js';
+import { asBarIndex, type Bar, type PriceScaleMode, type Timeframe } from '../data/types.js';
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { computeLayout, type Layout, type Rect } from '../renderer/layout.js';
 import { candleGeometry } from '../renderer/scale/timeScale.js';
 import { maxVolume } from '../renderer/scale/volumeScale.js';
-import { createGlSeriesLayer, supportsMode } from '../renderer/webgl/glSeriesLayer.js';
+import { createGlSeriesLayer } from '../renderer/webgl/glSeriesLayer.js';
 import { createChartRenderer, type LayerContexts } from '../renderer/index.js';
 import { createScheduler, DirtyFlags, type DirtyMask } from '../renderer/scheduler.js';
 import { createSurface, type Surface } from '../renderer/surface.js';
@@ -39,6 +39,9 @@ export interface ChartOptions {
    * reference implementation. Linear price scale only.
    */
   readonly renderer?: RendererMode;
+  readonly priceScaleMode?: PriceScaleMode;
+  /** Restores pan/zoom across a renderer swap, which has to rebuild the chart. */
+  readonly scrollPosition?: number;
 }
 
 /** Per-candle geometry actually used for the last frame — the Phase 3 assertion hook. */
@@ -89,7 +92,8 @@ export function createChart(o: ChartOptions): Chart {
   });
   const view = createViewStore({
     barSpacing: o.barSpacing ?? 8,
-    scrollPosition: Math.max(0, o.bars.length - 1),
+    scrollPosition: o.scrollPosition ?? Math.max(0, o.bars.length - 1),
+    priceScaleMode: o.priceScaleMode ?? 'linear',
   });
   const snapshots = createSnapshotSource(series, view);
   const renderer = createChartRenderer();
@@ -168,22 +172,8 @@ export function createChart(o: ChartOptions): Chart {
     crosshair: surfaces.crosshair.ctx,
   };
 
-  let glUnsupportedWarned = false;
-
   const drawGlSeries = (input: FrameInput): void => {
     if (glLayer === null) return;
-    if (!supportsMode(input.snapshot.priceScaleMode)) {
-      if (!glUnsupportedWarned) {
-        glUnsupportedWarned = true;
-        // Honest failure: the GPU path implements the linear transform only, and
-        // silently drawing a linear chart while the view asks for log would lie.
-        console.warn(
-          `[tdv-shadow] WebGL series layer supports the linear price scale only; ` +
-            `'${input.snapshot.priceScaleMode}' needs the Canvas2D renderer.`,
-        );
-      }
-      return;
-    }
     const bars = input.snapshot.series.bars;
     const { visible, priceScale } = input;
     glLayer.draw({
@@ -194,6 +184,7 @@ export function createChart(o: ChartOptions): Chart {
       volume: input.layout.volume,
       priceMin: priceScale.min,
       priceMax: priceScale.max,
+      scaleMode: input.snapshot.priceScaleMode,
       volumeMax: visible.isEmpty ? 0 : maxVolume(bars, visible.from, visible.to),
       barSpacing: input.timeScale.barSpacing,
       scrollPosition: input.timeScale.scrollPosition,
@@ -231,6 +222,12 @@ export function createChart(o: ChartOptions): Chart {
   };
 
   const scheduler = createScheduler({ frame });
+
+  // Programmatic view changes (price-scale mode, scripted zoom) must repaint too —
+  // without this only pointer input would, and toggling the scale would appear frozen.
+  const unsubscribeView = view.subscribe(() => {
+    scheduler.invalidate(DirtyFlags.All);
+  });
 
   // --- input --------------------------------------------------------------
   const pointer: PointerBindings = bindPointer({
@@ -291,6 +288,7 @@ export function createChart(o: ChartOptions): Chart {
     geometry,
     dispose(): void {
       containerObserver?.disconnect();
+      unsubscribeView();
       pointer.dispose();
       scheduler.dispose();
       for (const surface of liveSurfaces()) surface.dispose();

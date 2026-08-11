@@ -14,6 +14,7 @@ import type { Bar, PriceScaleMode } from '../../data/types.js';
 import type { Rect } from '../layout.js';
 import type { Theme } from '../theme.js';
 import { candleGeometry } from '../scale/timeScale.js';
+import { MIN_LOG_PRICE } from '../scale/priceScale.js';
 import {
   FRAGMENT_SHADER,
   PASS_BODY,
@@ -34,6 +35,8 @@ export interface GlFrame {
   readonly volume: Rect | null;
   readonly priceMin: number;
   readonly priceMax: number;
+  /** Which §-transform the shader should evaluate. */
+  readonly scaleMode: PriceScaleMode;
   readonly volumeMax: number;
   readonly barSpacing: number;
   readonly scrollPosition: number;
@@ -50,9 +53,22 @@ export interface GlSeriesLayer {
   dispose(): void;
 }
 
-/** Linear is the only mode with a GPU transform; see the file header. */
-export function supportsMode(mode: PriceScaleMode): boolean {
-  return mode === 'linear';
+/**
+ * 0 = linear (§2), 1 = logarithmic (§3). Percent shares the log geometry — it re-bases
+ * only the axis labels, so the pixels are identical.
+ *
+ * Deliberately an exhaustive switch rather than a `supportsMode` boolean: if a fourth
+ * price-scale mode is ever added, this fails to compile instead of silently falling
+ * through to the linear transform and drawing a chart that lies.
+ */
+export function scaleModeFlag(mode: PriceScaleMode): number {
+  switch (mode) {
+    case 'linear':
+      return 0;
+    case 'log':
+    case 'percent':
+      return 1;
+  }
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, source: string): WebGLShader {
@@ -166,6 +182,9 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
     volumeMax: uniform('uVolumeMax'),
     bodyWidth: uniform('uBodyWidth'),
     pass: uniform('uPass'),
+    scaleMode: uniform('uScaleMode'),
+    logMin: uniform('uLogMin'),
+    logMax: uniform('uLogMax'),
     colorUp: uniform('uColorUp'),
     colorDown: uniform('uColorDown'),
   };
@@ -247,6 +266,11 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
     gl.uniform1f(u.priceMax, frame.priceMax);
     gl.uniform1f(u.volumeMax, frame.volumeMax);
     gl.uniform1f(u.bodyWidth, geometry.width);
+    gl.uniform1i(u.scaleMode, scaleModeFlag(frame.scaleMode));
+    // §3 works in log space. The CPU already applied the degenerate-range guard there,
+    // so re-taking the log of the exposed bounds recovers exactly lMin/lMax.
+    gl.uniform1f(u.logMin, Math.log(Math.max(frame.priceMin, MIN_LOG_PRICE)));
+    gl.uniform1f(u.logMax, Math.log(Math.max(frame.priceMax, MIN_LOG_PRICE)));
 
     // SKILL rule 8: scissor is the GPU equivalent of ctx.clip() to the plot rect.
     const scissor = (rect: Rect): void => {

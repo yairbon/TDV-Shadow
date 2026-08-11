@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeBar, type Bar } from '../../../src/data/types.js';
-import { packInstances, parseColor, supportsMode } from '../../../src/renderer/webgl/glSeriesLayer.js';
+import { packInstances, parseColor, scaleModeFlag } from '../../../src/renderer/webgl/glSeriesLayer.js';
 
 function bars(): Bar[] {
   const out: Bar[] = [];
@@ -60,10 +60,16 @@ describe('parseColor', () => {
   });
 });
 
-describe('supportsMode', () => {
-  it('accepts linear only — log and percent stay on the Canvas2D path', () => {
-    expect(supportsMode('linear')).toBe(true);
-    expect(supportsMode('log')).toBe(false);
-    expect(supportsMode('percent')).toBe(false);
+describe('scaleModeFlag', () => {
+  it('maps linear to the §2 branch', () => {
+    expect(scaleModeFlag('linear')).toBe(0);
+  });
+
+  it('maps log to the §3 branch', () => {
+    expect(scaleModeFlag('log')).toBe(1);
+  });
+
+  it('renders percent with the log geometry — it re-bases labels only (§3)', () => {
+    expect(scaleModeFlag('percent')).toBe(scaleModeFlag('log'));
   });
 });

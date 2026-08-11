@@ -159,6 +159,59 @@ test.describe('WebGL series layer matches the Canvas2D reference', () => {
     }
   });
 
+  test('log scale: candle columns agree within 1 device pixel (§3)', async ({ page }) => {
+    const cpu = await coverageOf(page, `?${FIXTURE}&scale=log&gl=0`);
+    const gpu = await coverageOf(page, `?${FIXTURE}&scale=log&gl=1`);
+
+    expect(cpu.paintedPixels).toBeGreaterThan(10_000);
+    expect(gpu.paintedPixels).toBeGreaterThan(10_000);
+
+    const cpuCols = new Set(cpu.columns);
+    const gpuCols = new Set(gpu.columns);
+    const near = (set: Set<number>, x: number): boolean =>
+      set.has(x) || set.has(x - 1) || set.has(x + 1);
+
+    expect(gpu.columns.filter((x) => !near(cpuCols, x)).slice(0, 10)).toEqual([]);
+    expect(cpu.columns.filter((x) => !near(gpuCols, x)).slice(0, 10)).toEqual([]);
+  });
+
+  test('log scale: vertical extents agree within 1 device pixel (§3)', async ({ page }) => {
+    const cpu = await coverageOf(page, `?${FIXTURE}&scale=log&gl=0`);
+    const gpu = await coverageOf(page, `?${FIXTURE}&scale=log&gl=1`);
+
+    const gpuCols = new Set(gpu.columns);
+    const shared = cpu.columns.filter((x) => gpuCols.has(x));
+    expect(shared.length).toBeGreaterThan(100);
+
+    const drift: string[] = [];
+    for (const x of shared) {
+      const a = cpu.extents[String(x)];
+      const b = gpu.extents[String(x)];
+      if (Math.abs(a[0] - b[0]) > 1 || Math.abs(a[1] - b[1]) > 1) {
+        drift.push(
+          `x=${String(x)} cpu=[${String(a[0])},${String(a[1])}] gpu=[${String(b[0])},${String(b[1])}]`,
+        );
+      }
+    }
+    expect(drift.slice(0, 8)).toEqual([]);
+  });
+
+  test('log and linear are genuinely different geometry', async ({ page }) => {
+    // Guards the guard: if the scale toggle did nothing, the two comparisons above
+    // would be comparing linear to linear and would pass while proving nothing.
+    const linear = await coverageOf(page, `?${FIXTURE}&gl=1`);
+    const log = await coverageOf(page, `?${FIXTURE}&scale=log&gl=1`);
+
+    const logCols = new Set(log.columns);
+    const shared = linear.columns.filter((x) => logCols.has(x));
+    const moved = shared.filter((x) => {
+      const a = linear.extents[String(x)];
+      const b = log.extents[String(x)];
+      return Math.abs(a[0] - b[0]) > 1 || Math.abs(a[1] - b[1]) > 1;
+    });
+    expect(moved.length).toBeGreaterThan(0);
+  });
+
   test('webgl screenshot', async ({ page }) => {
     await coverageOf(page, `?${FIXTURE}&gl=1`);
     await expect(page.locator('#chart')).toHaveScreenshot('webgl-candles-1m.png');
