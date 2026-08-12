@@ -48,6 +48,21 @@ export function rectContains(r: Rect, x: number, y: number): boolean {
   return x >= r.left && x <= rectRight(r) && y >= r.top && y <= rectBottom(r);
 }
 
+/**
+ * A stacked pane shorter than this cannot show a readable series, so no requested
+ * fraction is allowed to produce one. CSS px.
+ */
+export const PANE_MIN_HEIGHT = 24;
+
+/** Ceiling on a single stacked pane, as a share of the content box. */
+export const PANE_MAX_FRACTION = 0.8;
+
+/** Default share of the content box taken by one indicator pane. */
+const DEFAULT_PANE_FRACTION = 0.16;
+
+/** Grab radius used by `dividerAt` when the caller does not supply one. CSS px. */
+export const DIVIDER_TOLERANCE = 4;
+
 export interface Layout {
   /** The whole canvas, CSS px. */
   readonly viewport: Rect;
@@ -80,6 +95,120 @@ export interface LayoutOptions {
    * `minPlotHeight` — a chart of unreadable slivers is worse than one with fewer panes.
    */
   readonly extraPanes?: number;
+  /**
+   * Height fractions of the content box, per stacked pane below the price plot, in
+   * top-to-bottom order: the volume pane first when present, then indicator panes.
+   * Absent (or short, or non-finite) entries fall back to the default sizing above.
+   *
+   * Supplying this switches the stack to the adjustable model: every requested pane is
+   * clamped to [`PANE_MIN_HEIGHT`, `PANE_MAX_FRACTION`], and a stack that would starve
+   * the price plot shrinks *as a whole* down to `minPlotHeight` instead of losing a pane.
+   * Panes are only dropped — from the bottom up — once even `PANE_MIN_HEIGHT` each does
+   * not fit, which keeps a visible pane's index equal to its index here.
+   */
+  readonly paneFractions?: readonly number[];
+}
+
+/** Heights of the stacked panes below the plot, before they are positioned. */
+interface StackHeights {
+  readonly volumeH: number;
+  readonly paneHeights: readonly number[];
+}
+
+/** Today's sizing: a fixed slice each, dropped outright when the plot would starve. */
+function defaultStack(
+  contentH: number,
+  gap: number,
+  volumeFraction: number,
+  extraPanes: number,
+  minPlotHeight: number,
+): StackHeights {
+  let plotH = contentH;
+  let volumeH = 0;
+  if (volumeFraction > 0) {
+    const candidate = Math.round(contentH * volumeFraction);
+    const remaining = contentH - candidate - gap;
+    if (candidate >= 1 && remaining >= minPlotHeight) {
+      volumeH = candidate;
+      plotH = remaining;
+    }
+  }
+
+  // Each extra pane takes a slice of what is left, and only if the price plot keeps at
+  // least `minPlotHeight` afterwards.
+  const paneHeights: number[] = [];
+  for (let i = 0; i < extraPanes; i++) {
+    const paneH = Math.round(contentH * DEFAULT_PANE_FRACTION);
+    if (paneH < 1 || plotH - (paneH + gap) < minPlotHeight) break;
+    plotH -= paneH + gap;
+    paneHeights.push(paneH);
+  }
+  return { volumeH, paneHeights };
+}
+
+/**
+ * Shrinks a stack until the price plot keeps `minPlotHeight`. Panes shrink together,
+ * proportionally and never below the floor; a pane is dropped from the bottom only when
+ * the floor itself no longer fits. Returns heights summing to at most the budget.
+ */
+function fitStack(
+  heights: readonly number[],
+  contentH: number,
+  gap: number,
+  minPlotHeight: number,
+): number[] {
+  const out = heights.slice();
+  const floor = Math.min(PANE_MIN_HEIGHT, Math.max(0, contentH));
+  while (out.length > 0) {
+    const n = out.length;
+    const budget = contentH - gap * n - minPlotHeight;
+    if (budget >= n * floor) {
+      let total = 0;
+      for (const h of out) total += h;
+      if (total <= budget) return out;
+      // `total > budget >= n * floor >= 0`, so the split below never divides by zero and
+      // never lands under the floor: every pane survives, just smaller.
+      const extra = budget - n * floor;
+      let given = 0;
+      for (let i = 0; i < n; i++) {
+        const share = Math.floor((extra * out[i]) / total);
+        out[i] = floor + share;
+        given += share;
+      }
+      // Truncation leaves fewer than `n` pixels over; hand them to the top panes.
+      for (let i = 0, left = extra - given; i < n && left > 0; i++, left--) out[i] += 1;
+      return out;
+    }
+    out.pop();
+  }
+  return out;
+}
+
+/** Adjustable sizing: caller-supplied fractions, clamped, then fitted to the box. */
+function requestedStack(
+  contentH: number,
+  gap: number,
+  volumeFraction: number,
+  extraPanes: number,
+  minPlotHeight: number,
+  fractions: readonly number[],
+): StackHeights {
+  const hasVolume = volumeFraction > 0;
+  const defaults: number[] = [];
+  if (hasVolume) defaults.push(volumeFraction);
+  for (let i = 0; i < extraPanes; i++) defaults.push(DEFAULT_PANE_FRACTION);
+
+  const ceiling = Math.floor(contentH * PANE_MAX_FRACTION);
+  const floor = Math.min(PANE_MIN_HEIGHT, Math.max(0, ceiling));
+  const heights = defaults.map((fallback, i) => {
+    const asked = fractions.at(i);
+    const f = asked === undefined || !Number.isFinite(asked) ? fallback : asked;
+    return Math.min(Math.max(Math.round(contentH * f), floor), Math.max(floor, ceiling));
+  });
+
+  const fitted = fitStack(heights, contentH, gap, minPlotHeight);
+  if (!hasVolume) return { volumeH: 0, paneHeights: fitted };
+  return { volumeH: fitted.length > 0 ? fitted[0] : 0, paneHeights: fitted.slice(1) };
 }
 
 /**
@@ -98,36 +227,25 @@ export function computeLayout(o: LayoutOptions): Layout {
 
   const gap = Math.round(Math.max(0, o.paneGap));
   const fraction = Math.min(Math.max(o.volumePaneFraction, 0), 1);
+  const requested = Math.max(0, Math.floor(o.extraPanes ?? 0));
+
+  const asked = o.paneFractions;
+  const { volumeH, paneHeights } =
+    asked === undefined
+      ? defaultStack(contentH, gap, fraction, requested, o.minPlotHeight)
+      : requestedStack(contentH, gap, fraction, requested, o.minPlotHeight, asked);
 
   let plotH = contentH;
-  let volumeH = 0;
-  if (fraction > 0) {
-    const candidate = Math.round(contentH * fraction);
-    const remaining = contentH - candidate - gap;
-    if (candidate >= 1 && remaining >= o.minPlotHeight) {
-      volumeH = candidate;
-      plotH = remaining;
-    }
-  }
+  if (volumeH > 0) plotH -= volumeH + gap;
+  for (const paneH of paneHeights) plotH -= paneH + gap;
 
-  // Each extra pane takes a slice of what is left, and only if the price plot keeps at
-  // least `minPlotHeight` afterwards.
-  const requested = Math.max(0, Math.floor(o.extraPanes ?? 0));
-  const panes: Rect[] = [];
-  for (let i = 0; i < requested; i++) {
-    const paneH = Math.round(contentH * 0.16);
-    if (paneH < 1 || plotH - (paneH + gap) < o.minPlotHeight) break;
-    plotH -= paneH + gap;
-    panes.push(makeRect(0, 0, contentW, paneH));
-  }
-
-  // Positions depend on the final plot height, so lay them out after the loop settles it.
+  // Positions depend on the final plot height, so lay them out after it settles.
   let cursor = plotH + gap;
   const volume = volumeH > 0 ? makeRect(0, cursor, contentW, volumeH) : null;
   if (volumeH > 0) cursor += volumeH + gap;
-  const placed = panes.map((pane) => {
-    const rect = makeRect(0, cursor, contentW, pane.height);
-    cursor += pane.height + gap;
+  const placed = paneHeights.map((paneH) => {
+    const rect = makeRect(0, cursor, contentW, paneH);
+    cursor += paneH + gap;
     return rect;
   });
 
