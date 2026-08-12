@@ -64,10 +64,54 @@ const inp = (selector: string): HTMLInputElement | null => {
 };
 
 const chartHost = el('#chart');
-if (chartHost === null) throw new Error('#chart container is missing from index.html');
-// Re-bind with an explicit non-null type: TS does not carry the narrowing into the
-// hoisted declarations below, and mandate #6 rules out a `!`.
-const container: HTMLElement = chartHost;
+const panesHostEl = el('#panes');
+if (chartHost === null || panesHostEl === null) {
+  throw new Error('#panes / #chart containers are missing from index.html');
+}
+// Re-bind with explicit non-null types: TS does not carry the narrowing into the hoisted
+// declarations below, and mandate #6 rules out a `!`.
+const panesHost: HTMLElement = panesHostEl;
+
+/**
+ * Multi-chart layouts (10.4).
+ *
+ * Each pane is a full `Chart` with its own symbol, timeframe, view and alerts. The state
+ * that used to be module-level singletons — symbol, bars, chart — still is: it belongs to
+ * whichever pane is ACTIVE, and switching panes swaps it in and out of these variables.
+ * That keeps every toolbar handler, dialog and shortcut written against one chart working
+ * unchanged, instead of threading a pane through several hundred lines.
+ *
+ * Pointer handlers are bound to the shared `#panes` element rather than to a pane, and
+ * resolve the pane from the event. One capture-phase listener, registered before all the
+ * others, makes the pane under the pointer active first — so by the time the selection,
+ * measure or menu handlers run, "the active chart" is the one being pointed at.
+ */
+interface Pane {
+  readonly index: number;
+  readonly host: HTMLElement;
+  symbol: string;
+  loaded: Loaded;
+  tf: Timeframe;
+  bars: Bar[];
+  chart: Chart | null;
+  scaleMode: PriceScaleMode;
+  inverted: boolean;
+  alertsJson: string;
+}
+
+export type LayoutId = '1' | '2h' | '2v' | '4';
+const PANE_COUNT: Readonly<Record<LayoutId, number>> = { '1': 1, '2h': 2, '2v': 2, '4': 4 };
+
+let panes: Pane[] = [];
+let activeIndex = 0;
+const activePane = (): Pane => panes[activeIndex];
+
+/** The pane an event landed in; the active one for window-level events during a drag. */
+function hostOf(event: { readonly target: EventTarget | null }): HTMLElement {
+  const node = event.target;
+  const found = node instanceof Element ? node.closest('[data-pane]') : null;
+  return found instanceof HTMLElement ? found : activePane().host;
+}
 
 const seed = num('seed', 7);
 
@@ -143,10 +187,11 @@ const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
 
 function build(scrollPosition?: number, barSpacing?: number): void {
+  const pane = activePane();
   chart?.dispose();
-  container.replaceChildren();
+  pane.host.replaceChildren();
   chart = createChart({
-    container,
+    container: pane.host,
     symbol,
     tf,
     bars,
@@ -195,6 +240,172 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   });
   renderLegend(null);
 }
+
+// ---------------------------------------------------------------- pane management
+
+let layout: LayoutId = saved?.layout ?? '1';
+let syncCrosshair = true;
+
+// No DOM label inside a pane: mandate #1's structural guard is that a plot host contains
+// canvases and nothing else, and each pane already names itself — `drawWatermark` paints
+// the symbol and timeframe on the grid layer of every chart.
+
+/** Copies the active pane's live state back into its record before switching away. */
+function stashActive(): void {
+  const pane = activePane();
+  pane.symbol = symbol;
+  pane.loaded = loaded;
+  pane.tf = tf;
+  pane.bars = bars;
+  pane.chart = chart;
+  pane.scaleMode = scaleMode;
+  pane.inverted = inverted;
+  pane.alertsJson = alertsJson;
+}
+
+function adoptActive(): void {
+  const pane = activePane();
+  symbol = pane.symbol;
+  loaded = pane.loaded;
+  tf = pane.tf;
+  bars = pane.bars;
+  chart = pane.chart;
+  scaleMode = pane.scaleMode;
+  inverted = pane.inverted;
+  alertsJson = pane.alertsJson;
+  window.__chartGeometry = () => chart?.geometry() ?? null;
+  if (chart === null) delete window.__chart;
+  else window.__chart = chart;
+}
+
+function markActive(): void {
+  for (const pane of panes) pane.host.classList.toggle('active', pane.index === activeIndex);
+}
+
+function setActivePane(index: number): void {
+  if (index === activeIndex || index < 0 || index >= panes.length) return;
+  stashActive();
+  activeIndex = index;
+  adoptActive();
+  markActive();
+  // The chrome describes the ACTIVE chart, so all of it has to follow the switch.
+  syncSymbolChrome();
+  syncTimeframes();
+  syncToggles();
+  renderLegend(null);
+  renderReplayBar();
+  status();
+}
+
+function newPane(index: number): Pane {
+  const host =
+    index === 0 && chartHost !== null
+      ? chartHost
+      : (() => {
+          const node = document.createElement('div');
+          node.className = 'pane';
+          node.dataset['pane'] = String(index);
+          panesHost.append(node);
+          return node;
+        })();
+  const initial = loadSymbol(symbol);
+  return {
+    index,
+    host,
+    symbol,
+    loaded: initial,
+    tf: initial.timeframe,
+    bars: initial.bars,
+    chart: null,
+    scaleMode: 'linear',
+    inverted: false,
+    alertsJson: '',
+  };
+}
+
+/**
+ * Applies a layout, creating or disposing panes to match.
+ *
+ * Panes are added and removed from the END, and existing ones keep their charts, so
+ * going 1 -> 4 -> 1 does not reload the chart you were looking at.
+ */
+function setLayout(next: LayoutId): void {
+  const wanted = PANE_COUNT[next];
+  layout = next;
+  panesHost.dataset['layout'] = next;
+  const picker = sel('#layout-pick');
+  if (picker !== null) picker.value = next;
+
+  while (panes.length > wanted) {
+    const pane = panes[panes.length - 1];
+    if (pane.index === activeIndex) {
+      // Never leave the active index pointing at a pane that is about to vanish.
+      setActivePane(0);
+    }
+    pane.chart?.dispose();
+    pane.host.remove();
+    panes = panes.slice(0, -1);
+  }
+  while (panes.length < wanted) {
+    const pane = newPane(panes.length);
+    panes = [...panes, pane];
+    const previous = activeIndex;
+    stashActive();
+    activeIndex = pane.index;
+    adoptActive();
+    build();
+    stashActive();
+    activeIndex = previous;
+    adoptActive();
+  }
+  markActive();
+  status();
+}
+
+sel('#layout-pick')?.addEventListener('change', (event) => {
+  const target = event.currentTarget;
+  if (target instanceof HTMLSelectElement) setLayout(target.value as LayoutId);
+});
+
+btn('#sync-crosshair')?.addEventListener('click', () => {
+  syncCrosshair = !syncCrosshair;
+  btn('#sync-crosshair')?.setAttribute('aria-pressed', String(syncCrosshair));
+});
+
+// Registered FIRST, in the capture phase, so every handler below it sees the pane under
+// the pointer as the active one.
+panesHost.addEventListener(
+  'pointerdown',
+  (event) => {
+    const host = hostOf(event);
+    const index = Number(host.dataset['pane'] ?? '0');
+    setActivePane(index);
+  },
+  true,
+);
+
+/**
+ * Crosshair sync (10.4): the pointer's BAR and PRICE are broadcast, not its pixels.
+ *
+ * Panes can show different symbols at different zooms, so a shared pixel would point at
+ * unrelated bars. Sharing the bar index lines the crosshairs up on the same moment in
+ * time, which is the reason to sync them at all.
+ */
+panesHost.addEventListener('pointermove', (event) => {
+  if (!syncCrosshair || panes.length < 2) return;
+  const source = activePane();
+  if (source.chart === null) return;
+  const rect = source.host.getBoundingClientRect();
+  const anchor = source.chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, 'off');
+  for (const pane of panes) {
+    if (pane.index === source.index || pane.chart === null) continue;
+    pane.chart.setExternalPointer(anchor.anchor.barIndex);
+  }
+});
+
+panesHost.addEventListener('pointerleave', () => {
+  for (const pane of panes) pane.chart?.setExternalPointer(null);
+});
 
 // ---------------------------------------------------------------- chart settings
 
@@ -333,17 +544,35 @@ legend?.addEventListener('dblclick', (event) => {
 
 // The legend follows the crosshair. This only reads state and writes text, so it stays
 // clear of the draw loop (mandate #3).
-container.addEventListener('pointermove', (event) => {
+panesHost.addEventListener('pointermove', (event) => {
   if (chart === null) return;
-  const rect = container.getBoundingClientRect();
+  const rect = hostOf(event).getBoundingClientRect();
   const anchor = chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, 'off');
   renderLegend(Math.round(anchor.anchor.barIndex));
 });
-container.addEventListener('pointerleave', () => {
+panesHost.addEventListener('pointerleave', () => {
   renderLegend(null);
 });
 
 // ---------------------------------------------------------------- symbol
+
+/** Chrome that names the ACTIVE pane's symbol. Also runs when the active pane changes. */
+function syncSymbolChrome(): void {
+  const name = el('#symbol-name');
+  if (name !== null) name.textContent = symbol;
+  const picker = sel('#symbol-pick');
+  if (picker !== null) picker.value = symbol;
+  const liveButton = btn('#live-toggle');
+  if (liveButton !== null) liveButton.disabled = !loaded.live;
+}
+
+/** Toolbar toggles that reflect per-pane state. */
+function syncToggles(): void {
+  logButton?.setAttribute('aria-pressed', String(scaleMode === 'log'));
+  glButton?.setAttribute('aria-pressed', String(rendererMode === 'webgl'));
+  const picker = sel('#chart-type');
+  if (picker !== null && chart !== null) picker.value = chart.chartType();
+}
 
 function switchSymbol(next: string): void {
   symbol = next;
@@ -352,12 +581,7 @@ function switchSymbol(next: string): void {
   tf = loaded.timeframe;
   setLive(false);
   build();
-  const name = el('#symbol-name');
-  if (name !== null) name.textContent = symbol;
-  const picker = sel('#symbol-pick');
-  if (picker !== null) picker.value = symbol;
-  const liveButton = btn('#live-toggle');
-  if (liveButton !== null) liveButton.disabled = !loaded.live;
+  syncSymbolChrome();
   syncTimeframes();
   renderLegend(null);
   status();
@@ -773,17 +997,17 @@ function status(): void {
 }
 
 let downAt: { x: number; y: number } | null = null;
-container.addEventListener('pointerdown', (event) => {
+panesHost.addEventListener('pointerdown', (event) => {
   downAt = { x: event.clientX, y: event.clientY };
 });
 
-container.addEventListener('click', (event) => {
+panesHost.addEventListener('click', (event) => {
   if (!isDrawingTool(activeTool) || chart === null) return;
   const start = downAt;
   // A click that followed a drag was a pan, not a placement.
   if (start !== null && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return;
 
-  const rect = container.getBoundingClientRect();
+  const rect = hostOf(event).getBoundingClientRect();
   const snapped = chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, magnet);
   pending = [...pending, snapped.anchor];
 
@@ -796,6 +1020,12 @@ container.addEventListener('click', (event) => {
 });
 
 // ---------------------------------------------------------------- boot
+
+// Pane 0 reuses the `#chart` element that is already in the page, so a single-chart
+// layout is byte-for-byte the DOM it was before multi-chart existed.
+panes = [newPane(0)];
+markActive();
+panesHost.dataset['layout'] = '1';
 
 build();
 switchSymbol(symbol);
@@ -827,6 +1057,22 @@ if (typeSelect !== null) typeSelect.value = 'candles';
 logButton?.setAttribute('aria-pressed', String(scaleMode === 'log'));
 glButton?.setAttribute('aria-pressed', String(rendererMode === 'webgl'));
 setLive(num('live', 0) === 1);
+
+// The saved layout is applied AFTER pane 0 is fully restored, so the extra panes are
+// created against a chart that already has its symbol, view and annotations.
+if (saved !== null && saved.layout !== '1') {
+  setLayout(saved.layout);
+  for (const pane of panes) {
+    // Index guard rather than an undefined check: `noUncheckedIndexedAccess` is off, so
+    // the index type is `string` and a null test reads as dead code to the linter.
+    if (pane.index === 0 || pane.index >= saved.paneSymbols.length) continue;
+    const wanted = saved.paneSymbols[pane.index];
+    if (wanted === pane.symbol) continue;
+    setActivePane(pane.index);
+    switchSymbol(wanted);
+  }
+  setActivePane(0);
+}
 status();
 
 // ---------------------------------------------------------------- symbol search
@@ -946,11 +1192,11 @@ function axisAt(x: number, y: number): 'price' | 'time' | null {
   return null;
 }
 
-container.addEventListener(
+panesHost.addEventListener(
   'pointerdown',
   (event) => {
     if (chart === null) return;
-    const rect = container.getBoundingClientRect();
+    const rect = hostOf(event).getBoundingClientRect();
     const axis = axisAt(event.clientX - rect.left, event.clientY - rect.top);
     if (axis === null || event.button !== 0) return;
     axisDrag = {
@@ -979,9 +1225,9 @@ window.addEventListener('pointerup', () => {
   axisDrag = null;
 });
 
-container.addEventListener('dblclick', (event) => {
+panesHost.addEventListener('dblclick', (event) => {
   if (chart === null) return;
-  const rect = container.getBoundingClientRect();
+  const rect = hostOf(event).getBoundingClientRect();
   // A drawing under the cursor wins: double-clicking a trendline must open its style
   // editor, not reset the scale it happens to be drawn on.
   const hit = chart.hitTestAt(event.clientX - rect.left, event.clientY - rect.top);
@@ -1053,6 +1299,8 @@ function snapshotWorkspace(active: Chart): Workspace {
     scrollPosition: view.scrollPosition,
     chartSettings,
     alerts: active.alerts.list().length > 0 ? active.alerts.toJSON() : null,
+    layout,
+    paneSymbols: panes.map((pane) => (pane.index === activeIndex ? symbol : pane.symbol)),
   };
 }
 
@@ -1157,7 +1405,7 @@ interface DragState {
 let drag: DragState | null = null;
 
 function localPoint(event: PointerEvent | MouseEvent): { x: number; y: number } {
-  const rect = container.getBoundingClientRect();
+  const rect = hostOf(event).getBoundingClientRect();
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
@@ -1166,7 +1414,7 @@ function localPoint(event: PointerEvent | MouseEvent): { x: number; y: number } 
  * pan handler never sees the gesture. Without that the chart would pan while the shape
  * moves, and both would be wrong.
  */
-container.addEventListener(
+panesHost.addEventListener(
   'pointerdown',
   (event) => {
     const active = currentChart();
@@ -1245,15 +1493,15 @@ window.addEventListener('pointerup', () => {
 });
 
 // Cursor feedback: a shape under the pointer should look grabbable.
-container.addEventListener('pointermove', (event) => {
+panesHost.addEventListener('pointermove', (event) => {
   const active = currentChart();
   if (active === null || drag !== null) return;
   if (activeTool !== '') {
-    container.style.cursor = 'crosshair';
+    hostOf(event).style.cursor = 'crosshair';
     return;
   }
   const point = localPoint(event);
-  container.style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
+  hostOf(event).style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
 });
 
 // ---------------------------------------------------------------- drawing style
@@ -1495,7 +1743,7 @@ function timeAxisMenu(active: Chart): MenuEntry[] {
   ];
 }
 
-container.addEventListener('contextmenu', (event) => {
+panesHost.addEventListener('contextmenu', (event) => {
   const active = currentChart();
   if (active === null) return;
   event.preventDefault();
@@ -1692,7 +1940,7 @@ function addAlertAt(y: number): void {
   status();
 }
 
-container.addEventListener(
+panesHost.addEventListener(
   'pointerdown',
   (event) => {
     const active = currentChart();
@@ -1737,7 +1985,7 @@ function measureActive(event: PointerEvent): boolean {
   return event.shiftKey || activeTool === 'measure';
 }
 
-container.addEventListener(
+panesHost.addEventListener(
   'pointerdown',
   (event) => {
     const active = currentChart();
@@ -1783,7 +2031,7 @@ function clearMeasure(): void {
 }
 
 // Any click that is not the tail of a measuring gesture clears the last measurement.
-container.addEventListener('click', () => {
+panesHost.addEventListener('click', () => {
   if (justMeasured) {
     justMeasured = false;
     return;

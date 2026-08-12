@@ -238,6 +238,12 @@ export interface Chart {
   readonly layout: () => Layout;
   readonly view: ViewStore;
   readonly snapshots: SnapshotSource;
+  /**
+   * Places the crosshair from ANOTHER chart (10.4 sync), by bar index rather than by
+   * pixel — panes can show different symbols at different zooms, so a shared pixel would
+   * point at unrelated bars. Null clears it. The chart's own pointer always wins.
+   */
+  setExternalPointer(barIndex: number | null): void;
   /** Applies a live tick and schedules a repaint. Never draws. */
   pushTick(bar: Bar): void;
   geometry(): GeometryDump | null;
@@ -302,6 +308,7 @@ export function createChart(o: ChartOptions): Chart {
   let priceZoom = 1;
   let priceInverted = false;
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
+  let externalPointerIndex: number | null = null;
   let replayIndex: number | null = null;
   /** Memo for the truncated snapshot; slicing 100k bars every frame is not free. */
   let replayCache: { key: string; snapshot: Snapshot } | null = null;
@@ -668,6 +675,21 @@ export function createChart(o: ChartOptions): Chart {
     return snapshot;
   };
 
+  /**
+   * The pointer the frame paints from: this chart's own if the cursor is over it, else a
+   * synced index from a sibling pane projected through THIS chart's own scales.
+   */
+  const framePointer = (): { readonly x: number; readonly y: number } | null => {
+    const own = pointer.pointer();
+    if (own !== null) return own;
+    const index = externalPointerIndex;
+    const input = lastInput;
+    if (index === null || input === null) return null;
+    // y is parked outside the plot: a synced crosshair marks a moment in time, and there
+    // is no honest price to put a horizontal line at on a different instrument.
+    return { x: input.timeScale.x(asBarIndex(index)), y: -1 };
+  };
+
   const frame = (mask: DirtyMask): void => {
     const started = performance.now();
     const baseSnapshot = visibleSnapshot();
@@ -692,7 +714,7 @@ export function createChart(o: ChartOptions): Chart {
       theme,
       pricePrecision,
       overlays: [],
-      pointer: pointer.pointer(),
+      pointer: framePointer(),
       priceRange: null,
       priceScaleInverted: priceInverted,
       showGrid,
@@ -712,7 +734,7 @@ export function createChart(o: ChartOptions): Chart {
         theme,
         pricePrecision,
         overlays: [],
-        pointer: pointer.pointer(),
+        pointer: framePointer(),
         priceRange: makePriceRange(centre - half, centre + half),
         priceScaleInverted: priceInverted,
         showGrid,
@@ -962,6 +984,11 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     replayAt: () => replayIndex,
+    setExternalPointer(index) {
+      if (index === externalPointerIndex) return;
+      externalPointerIndex = index;
+      scheduler.invalidate(DirtyFlags.Crosshair);
+    },
     setMeasure(next) {
       measure = next;
       scheduler.invalidate(DirtyFlags.Crosshair);

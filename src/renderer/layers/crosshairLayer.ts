@@ -47,7 +47,12 @@ export function drawCrosshairLayer(ctx: CanvasRenderingContext2D, f: FrameInput)
   const pointer = f.pointer;
   if (pointer === null) return;
   const content = f.layout.content;
-  if (!rectContains(content, pointer.x, pointer.y)) return;
+  // A synced crosshair from another pane (10.4) carries a bar but no price: the panes can
+  // hold different instruments, so there is no honest horizontal line to draw. It arrives
+  // with y outside the content rect and is drawn as the vertical rule and time tag only.
+  const verticalOnly = pointer.y < content.top || pointer.y > rectBottom(content);
+  if (!rectContains(content, pointer.x, content.top)) return;
+  if (!verticalOnly && !rectContains(content, pointer.x, pointer.y)) return;
 
   const bars = f.snapshot.series.bars;
   const theme = f.theme;
@@ -71,8 +76,10 @@ export function drawCrosshairLayer(ctx: CanvasRenderingContext2D, f: FrameInput)
   ctx.beginPath();
   ctx.moveTo(verticalX, snapFill(content.top));
   ctx.lineTo(verticalX, snapFill(rectBottom(content)));
-  ctx.moveTo(snapFill(content.left), horizontalY);
-  ctx.lineTo(snapFill(rectRight(content)), horizontalY);
+  if (!verticalOnly) {
+    ctx.moveTo(snapFill(content.left), horizontalY);
+    ctx.lineTo(snapFill(rectRight(content)), horizontalY);
+  }
   ctx.stroke();
   ctx.restore();
 
@@ -80,7 +87,7 @@ export function drawCrosshairLayer(ctx: CanvasRenderingContext2D, f: FrameInput)
 
   const gutter = f.layout.priceGutter;
   const plot = f.layout.plot;
-  if (gutter.width > 0 && pointer.y >= plot.top && pointer.y <= rectBottom(plot)) {
+  if (!verticalOnly && gutter.width > 0 && pointer.y >= plot.top && pointer.y <= rectBottom(plot)) {
     const price = f.priceScale.price(asPixel(pointer.y));
     const text =
       f.priceScale.mode === 'percent'

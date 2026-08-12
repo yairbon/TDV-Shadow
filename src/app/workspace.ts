@@ -41,6 +41,10 @@ export interface Workspace {
   readonly chartSettings: ChartSettings | null;
   /** Serialised alert store (9.2), or null when there are none. */
   readonly alerts: string | null;
+  /** Multi-chart layout (10.4). */
+  readonly layout: '1' | '2h' | '2v' | '4';
+  /** One symbol per pane, in pane order. Shorter than the layout implies is fine. */
+  readonly paneSymbols: readonly string[];
 }
 
 /** Mirrors `ChartSettingsForm` in ui/chartDialog, kept structural to avoid a UI import. */
@@ -52,6 +56,9 @@ export interface ChartSettings {
   readonly upColor: string;
   readonly downColor: string;
 }
+
+const readLayout = (value: unknown): Workspace['layout'] =>
+  value === '2h' || value === '2v' || value === '4' ? value : '1';
 
 const isColor = (value: unknown): value is string =>
   typeof value === 'string' && /^#[0-9a-f]{3,8}$/i.test(value);
@@ -190,6 +197,10 @@ export function loadWorkspace(): Workspace | null {
     // Validated by the alert store's own loadJSON, which drops bad entries field by
     // field; storing it as a string keeps one owner for that schema.
     alerts: typeof record['alerts'] === 'string' ? record['alerts'] : null,
+    layout: readLayout(record['layout']),
+    paneSymbols: Array.isArray(record['paneSymbols'])
+      ? record['paneSymbols'].filter((s): s is string => typeof s === 'string').slice(0, 4)
+      : [],
   };
 }
 
