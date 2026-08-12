@@ -312,6 +312,41 @@ export function buildGeometry(
       };
     }
 
+    case 'parallel-channel': {
+      const p2 = points[2];
+      /*
+       * The copy is translated in PIXELS, and that is deliberate — the one place in this
+       * tool where the price-space rule does not apply, for the same reason as
+       * `constrainToAngle`.
+       *
+       * The base line is already a straight pixel segment between two projected anchors
+       * (see `trendline`), so "parallel to it" is only defined in pixel space. Offsetting
+       * by a constant PRICE instead would, on a log scale, produce a line that does not
+       * pass through the anchor the user dragged it to — the handle would sit visibly off
+       * its own line. Everything that is stored is still an anchor in data space; only the
+       * relation between the two lines is pixel-derived, and it is recomputed every frame.
+       */
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      const p3 = { x: p2.x + dx, y: p2.y + dy };
+      return {
+        ...base,
+        // The last two segments close the band into a parallelogram. They stand in for the
+        // translucent fill TradingView paints there: `DrawingGeometry.box` is axis-aligned,
+        // so it cannot describe a sloped band, and the renderer has no polygon primitive.
+        segments: [
+          { from: p0, to: p1 },
+          { from: p2, to: p3 },
+          { from: p0, to: p2 },
+          { from: p1, to: p3 },
+        ],
+        levels: [],
+        points,
+        labels: [],
+        box: null,
+      };
+    }
+
     case 'elliott-impulse':
     case 'elliott-correction': {
       const names =

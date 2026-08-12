@@ -63,6 +63,9 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   // One anchor, like `horizontal-line`: the direction is fixed (rightwards), so a second
   // anchor would carry no information the first does not already have.
   'horizontal-ray': define('horizontal-ray', 'Horizontal Ray', 1),
+  // Three: `[baseFrom, baseTo, through]`. The first two are the base trend line, the third
+  // is the point the parallel copy must pass through — the same arity as `pitchfork`.
+  'parallel-channel': define('parallel-channel', 'Parallel Channel', 3),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */
