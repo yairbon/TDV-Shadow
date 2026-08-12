@@ -183,6 +183,16 @@
         font-size: 12px;
         font-variant-numeric: tabular-nums;
         padding: 0 8px;
+        /* The toolbar scrolls horizontally once its controls exceed the window, and the
+           status is the last item in it — so at any width under ~1650px it sat past the
+           right edge and was clipped mid-word ("2 drawin"). Sticking it to the
+           scrollport's right edge keeps it readable while the controls behind it still
+           scroll. `flex: 0 0 auto` because it must never be the thing that shrinks. */
+        position: sticky;
+        right: 0;
+        flex: 0 0 auto;
+        background: var(--panel);
+        box-shadow: -10px 0 10px -6px var(--panel);
       }
 
       /* ---------- body: left rail + chart ---------- */

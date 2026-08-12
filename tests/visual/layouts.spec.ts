@@ -55,6 +55,46 @@ const activeIndex = (page: Page): Promise<string> =>
 const layersIn = (page: Page, index: number): Promise<number> =>
   page.locator(`#panes .pane[data-pane="${String(index)}"] canvas`).count();
 
+/** Painted pixels on one pane's crosshair layer. */
+const crosshairInk = (page: Page, index: number): Promise<number> =>
+  page.evaluate((i) => {
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      `#panes .pane[data-pane="${String(i)}"] canvas[data-layer="crosshair"]`,
+    );
+    const ctx = canvas?.getContext('2d') ?? null;
+    if (canvas === null || ctx === null) return 0;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let count = 0;
+    for (let offset = 3; offset < data.length; offset += 4) if (data[offset] > 40) count++;
+    return count;
+  }, index);
+
+/** CSS x of the tallest inked column on a pane's crosshair layer — the vertical line. */
+const crosshairX = (page: Page, index: number): Promise<number> =>
+  page.evaluate((i) => {
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      `#panes .pane[data-pane="${String(i)}"] canvas[data-layer="crosshair"]`,
+    );
+    const ctx = canvas?.getContext('2d') ?? null;
+    if (canvas === null || ctx === null) return -1;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const rowBytes = canvas.width * 4;
+    const heights = new Int32Array(canvas.width);
+    for (let offset = 3; offset < data.length; offset += 4) {
+      if (data[offset] > 40) heights[((offset - 3) % rowBytes) / 4]++;
+    }
+    let best = -1;
+    let bestHeight = 0;
+    for (let x = 0; x < heights.length; x++) {
+      if (heights[x] > bestHeight) {
+        bestHeight = heights[x];
+        best = x;
+      }
+    }
+    const dpr = canvas.width / canvas.getBoundingClientRect().width;
+    return best < 0 ? -1 : best / dpr;
+  }, index);
+
 async function clickPane(page: Page, index: number): Promise<void> {
   const box = await page.locator(`#panes .pane[data-pane="${String(index)}"]`).boundingBox();
   expect(box).not.toBeNull();
@@ -217,7 +257,7 @@ test.describe('multi-chart layouts', () => {
     expect(await activeIndex(page)).toBe('0');
   });
 
-  test('the crosshair syncs by bar index, not by pixel', async ({ page }) => {
+  test('the crosshair syncs by time, not by pixel', async ({ page }) => {
     // Panes can be at different zooms, so a shared pixel would point at unrelated bars.
     await open(page);
     await setLayout(page, '2h');
@@ -232,18 +272,69 @@ test.describe('multi-chart layouts', () => {
     await page.mouse.move((box?.x ?? 0) + 200, (box?.y ?? 0) + 200);
     await page.waitForTimeout(300);
 
-    const inkOnOther = await page.evaluate(() => {
-      const canvas = document.querySelector<HTMLCanvasElement>(
-        '#panes .pane[data-pane="1"] canvas[data-layer="crosshair"]',
-      );
-      const ctx = canvas?.getContext('2d') ?? null;
-      if (canvas === null || ctx === null) return 0;
-      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      let count = 0;
-      for (let i = 3; i < data.length; i += 4) if (data[i] > 40) count++;
-      return count;
-    });
-    expect(inkOnOther).toBeGreaterThan(50);
+    expect(await crosshairInk(page, 1)).toBeGreaterThan(50);
+  });
+
+  test('the crosshair syncs across panes on different timeframes', async ({ page }) => {
+    // The case the bar-index version could not do, and the reason it was wrong: index `i`
+    // is the same moment in two panes only when both hold the same series at the same
+    // timeframe. Pane 0 on 1m and pane 1 on 1H have wildly different bar counts, so the
+    // hovered index ran off the end of the shorter series and no line appeared at all.
+    await open(page);
+    await setLayout(page, '2h');
+    await clickPane(page, 1);
+    await page.click('#timeframes button[data-tf="1h"]');
+    await page.waitForTimeout(700);
+    await clickPane(page, 0);
+    await page.click('#timeframes button[data-tf="1m"]');
+    await page.waitForTimeout(700);
+
+    // Hover a bar well inside pane 0's history, and remember WHEN it is.
+    const box = await page.locator('#panes .pane[data-pane="0"]').boundingBox();
+    const hoverX = (box?.x ?? 0) + 320;
+    const hoverY = (box?.y ?? 0) + 200;
+    await page.mouse.move(hoverX, hoverY);
+    await page.waitForTimeout(400);
+
+    const hoveredTime = await page.evaluate(
+      ([x, y]) => {
+        const chart = (window as {
+          __chart?: {
+            pickAnchor: (x: number, y: number, m: string) => { anchor: { barIndex: number } };
+            timeAtIndex: (i: number) => number | null;
+          };
+        }).__chart;
+        if (chart === undefined) return null;
+        return chart.timeAtIndex(chart.pickAnchor(x, y, 'off').anchor.barIndex);
+      },
+      [320, 200],
+    );
+    expect(hoveredTime).not.toBeNull();
+
+    // The line must be THERE at all — this is the symptom the bug produced.
+    expect(await crosshairInk(page, 1)).toBeGreaterThan(50);
+
+    // And it must be at the right place: convert pane 1's crosshair pixel back to a time
+    // through pane 1's own scales and compare. Activating pane 1 does not move its view,
+    // so the mapping still holds after the click.
+    const lineX = await crosshairX(page, 1);
+    expect(lineX).toBeGreaterThan(0);
+    await clickPane(page, 1);
+    const syncedTime = await page.evaluate((x) => {
+      const chart = (window as {
+        __chart?: {
+          pickAnchor: (x: number, y: number, m: string) => { anchor: { barIndex: number } };
+          timeAtIndex: (i: number) => number | null;
+        };
+      }).__chart;
+      if (chart === undefined) return null;
+      return chart.timeAtIndex(chart.pickAnchor(x, 100, 'off').anchor.barIndex);
+    }, lineX);
+
+    expect(syncedTime).not.toBeNull();
+    // Within one hourly bar: pane 1 cannot resolve a 1m moment more finely than that.
+    const HOUR_MS = 60 * 60 * 1000;
+    expect(Math.abs((syncedTime ?? 0) - (hoveredTime ?? 0))).toBeLessThanOrEqual(HOUR_MS);
   });
 
   test('the control API reports the ACTIVE pane, not the last one built', async ({ page }) => {

@@ -391,7 +391,16 @@ export function drawDrawings(
     if (style.showLabels) {
       ctx.fillStyle = theme.axisText;
       for (const level of geometry.levels) {
-        ctx.fillText(level.label, plot.left + 6, snapLine(level.y) - 7);
+        // At the level's own left edge, not the plot's. A fib drawn in the middle of the
+        // chart used to label itself over on the far left, on top of the legend and
+        // pointing at nothing. Clamped so a drawing dragged half off-screen keeps its
+        // labels inside the plot rather than under the price gutter.
+        const width = ctx.measureText(level.label).width;
+        const x = Math.min(
+          Math.max(level.x + 6, plot.left + 6),
+          plot.left + plot.width - width - 4,
+        );
+        ctx.fillText(level.label, x, snapLine(level.y) - 7);
       }
       for (const label of geometry.labels) {
         ctx.fillText(label.text, label.x + 6, label.y);

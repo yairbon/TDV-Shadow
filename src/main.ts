@@ -514,11 +514,15 @@ panesHost.addEventListener(
 );
 
 /**
- * Crosshair sync (10.4): the pointer's BAR and PRICE are broadcast, not its pixels.
+ * Crosshair sync (10.4): the pointer's MOMENT is broadcast, not its pixels or its index.
  *
- * Panes can show different symbols at different zooms, so a shared pixel would point at
- * unrelated bars. Sharing the bar index lines the crosshairs up on the same moment in
- * time, which is the reason to sync them at all.
+ * Not pixels, because panes show different symbols at different zooms and a shared pixel
+ * points at unrelated bars. Not the bar index either, which is what this used to send:
+ * index `i` is the same moment in two panes only when both hold the same series at the
+ * same timeframe. Put a 1H pane beside a 1m one, or Renko beside candles, and the index
+ * lands somewhere arbitrary — or past the end of a shorter series, where no line appears
+ * at all, which is what the four-pane layout actually did. Each pane converts the time to
+ * its own index, and shows nothing when the moment is outside its history.
  */
 panesHost.addEventListener('pointermove', (event) => {
   if (!syncCrosshair || panes.length < 2) return;
@@ -526,14 +530,15 @@ panesHost.addEventListener('pointermove', (event) => {
   if (source.chart === null) return;
   const rect = source.host.getBoundingClientRect();
   const anchor = source.chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, 'off');
+  const time = source.chart.timeAtIndex(anchor.anchor.barIndex);
   for (const pane of panes) {
     if (pane.index === source.index || pane.chart === null) continue;
-    pane.chart.setExternalPointer(anchor.anchor.barIndex);
+    pane.chart.setExternalTime(time);
   }
 });
 
 panesHost.addEventListener('pointerleave', () => {
-  for (const pane of panes) pane.chart?.setExternalPointer(null);
+  for (const pane of panes) pane.chart?.setExternalTime(null);
 });
 
 // ---------------------------------------------------------------- chart settings

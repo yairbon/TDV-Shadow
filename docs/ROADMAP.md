@@ -152,6 +152,23 @@ default fit an index-preserving type sits under 2px per bar, the bodies tile the
 to end, and there is nowhere for stray ink to be detected. Both halves were verified by
 reverting each fix separately.
 
+Three more from the same pass, each of which only shows up on screen:
+
+- **Every level label was drawn at `plot.left + 6`.** A fib placed on the right of the
+  chart wrote its ratio labels over on the far left, on top of the legend and pointing at
+  nothing. `Level` carries its own left edge now, clamped so the label stays inside the
+  plot at either end — the layer clips to the plot, so an unclamped label is silently
+  truncated rather than merely misplaced.
+- **Crosshair sync broadcast the bar INDEX.** Index `i` is the same moment in two panes
+  only when both hold the same series at the same timeframe. A 1m pane beside a 1H one
+  sent an index past the end of the shorter series, so no synced line appeared at all —
+  which is what a four-pane layout actually did. Time is the only coordinate the panes
+  share; each converts it to its own index and shows nothing when the moment is outside
+  its history.
+- **The status readout sat off the right edge of the top bar**, clipped mid-word
+  ("2 drawin"), at every window narrower than about 1650px. The bar scrolls horizontally
+  and the status is its last item; it is stuck to the scrollport's right edge now.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

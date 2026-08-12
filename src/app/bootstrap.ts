@@ -15,10 +15,12 @@ import {
   asBarIndex,
   asPixel,
   asPrice,
+  asTimeMs,
   makeBar,
   TIMEFRAME_MS,
   type Bar,
   type PriceScaleMode,
+  type TimeMs,
   type Timeframe,
 } from '../data/types.js';
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
@@ -48,7 +50,7 @@ import { snapPixel, type SnapResult } from '../drawings/magnet.js';
 import type { Anchor, MagnetMode } from '../drawings/types.js';
 import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
 import { timeOf, type ChartType, type ChartTypeParams, type DerivedSeries } from '../charts/types.js';
-import { remapIndex } from '../charts/remap.js';
+import { indexAtTime, remapIndex } from '../charts/remap.js';
 import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
 import {
   createFeatureState,
@@ -250,11 +252,26 @@ export interface Chart {
   readonly view: ViewStore;
   readonly snapshots: SnapshotSource;
   /**
-   * Places the crosshair from ANOTHER chart (10.4 sync), by bar index rather than by
-   * pixel — panes can show different symbols at different zooms, so a shared pixel would
-   * point at unrelated bars. Null clears it. The chart's own pointer always wins.
+   * Places the crosshair from ANOTHER chart (10.4 sync), by TIME. Null clears it, and
+   * the chart's own pointer always wins.
+   *
+   * Not by pixel, because panes show different symbols at different zooms and a shared
+   * pixel points at unrelated bars. Not by bar index either, which is what this used to
+   * take: index `i` is only the same moment in two panes when both hold the same series
+   * at the same timeframe. Point one pane at 5m and another at 1H, or put a Renko series
+   * next to candles, and the synced line lands somewhere arbitrary — or off the end of a
+   * shorter series, where it does not appear at all. Time is the only coordinate the
+   * panes genuinely share; each one converts it to its own index.
    */
-  setExternalPointer(barIndex: number | null): void;
+  setExternalTime(time: TimeMs | null): void;
+  /**
+   * The moment at an index of the space this chart is RENDERING — brick time under a
+   * resampling type, bar time otherwise. Null when the index is off the end.
+   *
+   * This is the other half of `setExternalTime`: the pane under the cursor converts its
+   * index to a time, the others convert that time back to their own index.
+   */
+  timeAtIndex(index: number): TimeMs | null;
   /** Applies a live tick and schedules a repaint. Never draws. */
   pushTick(bar: Bar): void;
   geometry(): GeometryDump | null;
@@ -319,10 +336,12 @@ export function createChart(o: ChartOptions): Chart {
   let priceZoom = 1;
   let priceInverted = false;
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
-  let externalPointerIndex: number | null = null;
+  let externalPointerTime: number | null = null;
   let replayIndex: number | null = null;
   /** Memo for the truncated snapshot; slicing 100k bars every frame is not free. */
   let replayCache: { key: string; snapshot: Snapshot } | null = null;
+  /** Memo for the rendered index space's timestamps, keyed on the snapshot's identity. */
+  let renderedTimesCache: { snapshot: Snapshot; times: readonly number[] } | null = null;
 
   /**
    * Identity of the DATA a memo depends on: the bars, and how far replay has truncated
@@ -703,6 +722,23 @@ export function createChart(o: ChartOptions): Chart {
    * This is the index space a switch is moving between: the source bar times when the
    * type preserves index space, and the derived bars' resolved times when it does not.
    */
+  /**
+   * Timestamp per index of the snapshot that was RENDERED, cached on its identity.
+   *
+   * `indexTimes` below answers the same question for a chart type that is not on screen,
+   * which is what a type switch needs. This one is for the frame: the snapshot is
+   * memoised on the data revision, so the array is rebuilt when the data changes rather
+   * than once per frame — a synced crosshair over 100k bars must not allocate a 100k
+   * array every time the sibling pane's pointer moves.
+   */
+  const renderedTimes = (snapshot: Snapshot): readonly number[] => {
+    const cached = renderedTimesCache;
+    if (cached !== null && cached.snapshot === snapshot) return cached.times;
+    const times = snapshot.series.bars.map((bar) => bar.t as number);
+    renderedTimesCache = { snapshot, times };
+    return times;
+  };
+
   const indexTimes = (type: ChartType, params: ChartTypeParams): number[] => {
     const source = series.get().bars;
     const derived = seriesMemo.compute(dataRevision(), type, params, source);
@@ -764,12 +800,18 @@ export function createChart(o: ChartOptions): Chart {
   const framePointer = (): { readonly x: number; readonly y: number } | null => {
     const own = pointer.pointer();
     if (own !== null) return own;
-    const index = externalPointerIndex;
+    const time = externalPointerTime;
     const input = lastInput;
-    if (index === null || input === null) return null;
+    if (time === null || input === null) return null;
+    const times = renderedTimes(input.snapshot);
+    if (times.length === 0) return null;
+    // Outside this chart's history entirely — a 1H pane next to a 1m one covers a wider
+    // span, so a moment can genuinely have no bar here. Drawing at the clamped edge
+    // would claim the cursor is somewhere it is not.
+    if (time < times[0] || time > times[times.length - 1]) return null;
     // y is parked outside the plot: a synced crosshair marks a moment in time, and there
     // is no honest price to put a horizontal line at on a different instrument.
-    return { x: input.timeScale.x(asBarIndex(index)), y: -1 };
+    return { x: input.timeScale.x(asBarIndex(indexAtTime(times, time))), y: -1 };
   };
 
   const frame = (mask: DirtyMask): void => {
@@ -1076,9 +1118,18 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     replayAt: () => replayIndex,
-    setExternalPointer(index) {
-      if (index === externalPointerIndex) return;
-      externalPointerIndex = index;
+    timeAtIndex(index) {
+      const input = lastInput;
+      if (input === null) return null;
+      const times = renderedTimes(input.snapshot);
+      const i = Math.round(index);
+      if (i < 0 || i >= times.length) return null;
+      return asTimeMs(times[i]);
+    },
+    setExternalTime(time) {
+      const next = time === null ? null : Number(time);
+      if (next === externalPointerTime) return;
+      externalPointerTime = next;
       scheduler.invalidate(DirtyFlags.Crosshair);
     },
     setMeasure(next) {

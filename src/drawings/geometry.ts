@@ -55,6 +55,14 @@ export interface Level {
   readonly price: number;
   readonly y: number;
   readonly label: string;
+  /**
+   * Left end of the level's own run, in CSS px — where its label belongs.
+   *
+   * The renderer used to put every level label at `plot.left + 6` no matter where the
+   * drawing was, so a fib placed in the middle of the chart labelled itself over on the
+   * far left, on top of the legend and pointing at nothing.
+   */
+  readonly x: number;
 }
 
 export interface DrawingGeometry {
@@ -164,7 +172,15 @@ export function buildGeometry(
       return {
         ...base,
         segments: [{ from: { x: plot.left, y: p0.y }, to: { x: right, y: p0.y } }],
-        levels: [{ price: drawing.anchors[0].price, y: p0.y, label: drawing.anchors[0].price.toFixed(2) }],
+        // A horizontal line spans the whole plot, so its own left edge IS the plot's.
+        levels: [
+          {
+            price: drawing.anchors[0].price,
+            y: p0.y,
+            label: drawing.anchors[0].price.toFixed(2),
+            x: plot.left,
+          },
+        ],
         points,
         labels: [],
         box: null,
@@ -203,6 +219,8 @@ export function buildGeometry(
         drawing.kind === 'fib-retracement' ? FIB_RETRACEMENT_LEVELS : FIB_EXTENSION_LEVELS;
       const priceA = drawing.anchors[0].price;
       const priceB = drawing.anchors[1].price;
+      const x0 = Math.min(p0.x, p1.x);
+      const x1 = Math.max(p0.x, p1.x);
       const levels: Level[] = ratios.map((ratio) => {
         // Price space, always. Interpolating pixels here would be wrong on a log scale.
         const levelPrice = priceA + (priceB - priceA) * ratio;
@@ -210,10 +228,9 @@ export function buildGeometry(
           price: levelPrice,
           y: price.y(levelPrice),
           label: `${ratioLabel(ratio)} (${levelPrice.toFixed(2)})`,
+          x: x0,
         };
       });
-      const x0 = Math.min(p0.x, p1.x);
-      const x1 = Math.max(p0.x, p1.x);
       return {
         ...base,
         segments: levels.map((l) => ({ from: { x: x0, y: l.y }, to: { x: x1, y: l.y } })),
@@ -294,13 +311,18 @@ export function buildGeometry(
       const reward = Math.abs(target.price - entry.price);
       const risk = Math.abs(entry.price - stop.price);
       const ratio = risk === 0 ? Number.POSITIVE_INFINITY : reward / risk;
-      const levels: Level[] = [
-        { price: entry.price, y: price.y(entry.price), label: `Entry ${entry.price.toFixed(2)}` },
-        { price: target.price, y: price.y(target.price), label: `Target ${target.price.toFixed(2)}` },
-        { price: stop.price, y: price.y(stop.price), label: `Stop ${stop.price.toFixed(2)}` },
-      ];
       const x0 = Math.min(p0.x, points[1].x);
       const x1 = Math.max(p0.x, points[1].x);
+      const levels: Level[] = [
+        { price: entry.price, y: price.y(entry.price), label: `Entry ${entry.price.toFixed(2)}`, x: x0 },
+        {
+          price: target.price,
+          y: price.y(target.price),
+          label: `Target ${target.price.toFixed(2)}`,
+          x: x0,
+        },
+        { price: stop.price, y: price.y(stop.price), label: `Stop ${stop.price.toFixed(2)}`, x: x0 },
+      ];
       return {
         ...base,
         segments: levels.map((l) => ({ from: { x: x0, y: l.y }, to: { x: x1, y: l.y } })),

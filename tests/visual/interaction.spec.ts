@@ -467,3 +467,82 @@ test.describe('context menus', () => {
     expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(size.height);
   });
 });
+
+test.describe('level labels', () => {
+  /**
+   * Ink on the overlay layer inside a CSS x band.
+   *
+   * Measured as a BEFORE/AFTER difference rather than as an absolute, because the overlay
+   * also carries the last-price line, which spans the full width — an absolute count in
+   * any band is non-zero before a drawing exists at all.
+   */
+  const inkInBand = (page: Page, from: number, to: number): Promise<number> =>
+    page.evaluate(
+      ([x0, x1]) => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '#chart canvas[data-layer="overlay"]',
+        );
+        const ctx = canvas?.getContext('2d') ?? null;
+        if (canvas === null || ctx === null) return -1;
+        const dpr = canvas.width / canvas.getBoundingClientRect().width;
+        const left = Math.round(x0 * dpr);
+        const width = Math.max(1, Math.round((x1 - x0) * dpr));
+        const data = ctx.getImageData(left, 0, width, canvas.height).data;
+        let count = 0;
+        for (let offset = 3; offset < data.length; offset += 4) if (data[offset] > 40) count++;
+        return count;
+      },
+      [from, to],
+    );
+
+  test('a fib labels itself at its own left edge, not the plot’s', async ({ page }) => {
+    // Every level label went to `plot.left + 6` regardless of where the drawing was, so a
+    // fib placed on the right half of the chart wrote its labels across on the far left,
+    // on top of the legend and pointing at nothing.
+    await open(page);
+    const plot = await page.evaluate(() => {
+      const g = (window as {
+        __chartGeometry?: () => { plot: { left: number; width: number } } | null;
+      }).__chartGeometry?.();
+      return g?.plot ?? { left: 0, width: 0 };
+    });
+    const leftBefore = await inkInBand(page, plot.left, plot.left + plot.width * 0.25);
+    const rightBefore = await inkInBand(page, plot.left + plot.width * 0.5, plot.left + plot.width);
+
+    // Place the fib entirely inside the RIGHT half of the plot.
+    const placed = await page.evaluate(() => {
+      const win = window as {
+        __tdv?: {
+          drawShape: (k: string, a: unknown[], m: string) => unknown;
+          getState: () => { viewport: { visibleFrom: number; visibleTo: number } };
+        };
+        __chart?: { series: { get: () => { bars: readonly { c: number }[] } } };
+      };
+      const view = win.__tdv?.getState().viewport;
+      const bars = win.__chart?.series.get().bars ?? [];
+      if (view === undefined) return null;
+      const span = view.visibleTo - view.visibleFrom;
+      const a = Math.round(view.visibleFrom + span * 0.62);
+      const b = Math.round(view.visibleFrom + span * 0.92);
+      win.__tdv?.drawShape(
+        'fib-retracement',
+        [
+          { barIndex: a, price: bars[a].c },
+          { barIndex: b, price: bars[b].c * 1.02 },
+        ],
+        'off',
+      );
+      return { a, b };
+    });
+    expect(placed).not.toBeNull();
+    await page.waitForTimeout(300);
+
+    const leftAfter = await inkInBand(page, plot.left, plot.left + plot.width * 0.25);
+    const rightAfter = await inkInBand(page, plot.left + plot.width * 0.5, plot.left + plot.width);
+
+    // The drawing is real…
+    expect(rightAfter - rightBefore).toBeGreaterThan(200);
+    // …and it added nothing over on the left, where the legend lives.
+    expect(leftAfter - leftBefore).toBe(0);
+  });
+});

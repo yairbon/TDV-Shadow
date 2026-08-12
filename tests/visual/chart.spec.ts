@@ -179,3 +179,81 @@ test.describe('screenshots', () => {
     await expect(page).toHaveScreenshot('full-page.png', { fullPage: true });
   });
 });
+
+test.describe('toolbar chrome', () => {
+  /**
+   * The status readout must stay on screen at every width the app supports.
+   *
+   * The top bar scrolls horizontally once its controls exceed the window, and the status
+   * is the last item in it — so below about 1650px it sat past the right edge, clipped
+   * mid-word ("2 drawin"). It is stuck to the scrollport's right edge now.
+   */
+  for (const width of [1650, 1440, 1280, 1024]) {
+    test(`the status readout is fully visible at ${String(width)}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await openChart(page, '?seed=7&bars=400&live=0');
+      await page.waitForTimeout(200);
+
+      const box = await page.evaluate(() => {
+        const bar = document.querySelector('#topbar');
+        const status = document.querySelector('#status');
+        if (bar === null || status === null) return null;
+        const b = bar.getBoundingClientRect();
+        const s = status.getBoundingClientRect();
+        return {
+          statusLeft: s.left,
+          statusRight: s.right,
+          statusWidth: s.width,
+          barLeft: b.left,
+          barRight: b.right,
+          text: status.textContent,
+        };
+      });
+
+      expect(box).not.toBeNull();
+      // It says something, and every pixel of it is inside the bar.
+      expect((box?.text ?? '').length).toBeGreaterThan(4);
+      expect(box?.statusWidth ?? 0).toBeGreaterThan(20);
+      expect(box?.statusRight ?? 0).toBeLessThanOrEqual((box?.barRight ?? 0) + 0.5);
+      expect(box?.statusLeft ?? 0).toBeGreaterThanOrEqual((box?.barLeft ?? 0) - 0.5);
+    });
+  }
+
+  test('the status readout stays visible as its text grows', async ({ page }) => {
+    // The text is longest with a tool armed and drawings placed, which is exactly when it
+    // was being cut off.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openChart(page, '?seed=7&bars=400&live=0');
+    await page.evaluate(() => {
+      const api = (window as {
+        __tdv?: { drawShape: (k: string, a: unknown[], m: string) => unknown };
+      }).__tdv;
+      for (const at of [20, 60]) {
+        api?.drawShape(
+          'trendline',
+          [
+            { barIndex: at, price: 100 },
+            { barIndex: at + 20, price: 101 },
+          ],
+          'off',
+        );
+      }
+    });
+    await page.keyboard.press('Alt+t');
+    await page.waitForTimeout(300);
+
+    const box = await page.evaluate(() => {
+      const bar = document.querySelector('#topbar');
+      const status = document.querySelector('#status');
+      if (bar === null || status === null) return null;
+      return {
+        text: status.textContent,
+        statusRight: status.getBoundingClientRect().right,
+        barRight: bar.getBoundingClientRect().right,
+      };
+    });
+    expect(box?.text).toContain('drawings');
+    expect(box?.text).toContain('trendline');
+    expect(box?.statusRight ?? 0).toBeLessThanOrEqual((box?.barRight ?? 0) + 0.5);
+  });
+});
