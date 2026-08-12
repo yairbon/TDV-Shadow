@@ -3,6 +3,7 @@
 import type { Bar } from '../data/types.js';
 import { atrIndicator, bollingerIndicator, macdIndicator, rsiIndicator, stochasticIndicator } from './oscillators.js';
 import { emaIndicator, vwapIndicator, wmaIndicator } from './movingAverages.js';
+import { adxIndicator } from './adx.js';
 import { cciIndicator } from './cci.js';
 import { donchianIndicator } from './donchian.js';
 import { keltnerIndicator } from './keltner.js';
@@ -29,6 +30,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   'williams-r': williamsRIndicator,
   donchian: donchianIndicator,
   keltner: keltnerIndicator,
+  adx: adxIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {

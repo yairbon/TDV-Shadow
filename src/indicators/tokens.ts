@@ -19,3 +19,15 @@ export const TOKEN_HISTOGRAM = 'indicatorHistogram';
 export const TOKEN_VOLUME = 'upVolume';
 /** Horizontal volume-profile rows. */
 export const TOKEN_PROFILE = 'indicatorProfile';
+
+/**
+ * Directional pair — a plot that means "buying pressure" against one that means "selling
+ * pressure" (+DI / −DI, an up-trend stop against a down-trend stop).
+ *
+ * These deliberately alias token names the renderer already resolves (`upVolume` and
+ * `indicatorLineAlt` → the theme's up and down body colours) rather than introducing new
+ * names: an unknown token falls back to `overlayLine`, which would silently paint the two
+ * halves of a directional pair the same colour.
+ */
+export const TOKEN_LINE_POSITIVE = 'upVolume';
+export const TOKEN_LINE_NEGATIVE = 'indicatorLineAlt';

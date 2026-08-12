@@ -29,7 +29,8 @@ export type IndicatorId =
   | 'cci'
   | 'williams-r'
   | 'donchian'
-  | 'keltner';
+  | 'keltner'
+  | 'adx';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
