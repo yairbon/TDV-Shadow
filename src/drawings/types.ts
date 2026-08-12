@@ -42,6 +42,7 @@ export const DRAWING_KINDS = [
   'date-price-range',
   'trend-angle',
   'polyline',
+  'callout',
 ] as const;
 
 export type DrawingKind = (typeof DRAWING_KINDS)[number];

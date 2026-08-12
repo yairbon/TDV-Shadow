@@ -423,6 +423,36 @@ export function buildGeometry(
       return { ...base, segments: [], levels: [], points, labels, box };
     }
 
+    case 'callout': {
+      const text = String(drawing.params['text'] ?? '');
+      const height = numberParam(drawing, 'boxHeight', 22);
+      const padding = numberParam(drawing, 'padding', 6);
+      // No font metrics here (see `callout` in tools.ts): a nominal advance width per
+      // character, which the renderer's 11px UI font stays under for ordinary text.
+      const width = text.length * numberParam(drawing, 'charWidth', 6) + padding * 2;
+      // The second anchor is the box's left edge, vertically centred on it — so the anchor
+      // handle the user drags is ON the box, not floating at one of its corners.
+      const box = {
+        x0: p1.x,
+        y0: p1.y - height / 2,
+        x1: p1.x + width,
+        y1: p1.y + height / 2,
+      };
+      return {
+        ...base,
+        // The leader stops at whichever vertical edge FACES the target. Always ending it at
+        // the left edge would drag the line straight across the text whenever the note was
+        // placed to the left of what it annotates.
+        segments: [{ from: p0, to: { x: p0.x > box.x1 ? box.x1 : box.x0, y: p1.y } }],
+        levels: [],
+        points,
+        // The renderer insets label text by 6px, which is `padding` — so the text lands
+        // inside the box rather than on its border.
+        labels: [{ x: box.x0, y: p1.y, text }],
+        box,
+      };
+    }
+
     case 'polyline': {
       // OPEN: one segment per consecutive pair and nothing joining the last anchor back to
       // the first. Closing it would turn a path into a polygon and hand the hit tester a

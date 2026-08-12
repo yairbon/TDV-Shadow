@@ -97,6 +97,26 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
    * gesture, this number is the only thing that has to change.
    */
   polyline: define('polyline', 'Polyline', 8),
+  /*
+   * `[target, box]`: the first anchor is what the note points AT, the second is where the
+   * text box sits, and the leader line runs between them.
+   *
+   * The three pixel params size the box. Geometry has no font metrics — it cannot call
+   * `measureText` — so the width is `text.length * charWidth + 2 * padding`, with
+   * `charWidth` a nominal advance for the renderer's 11px UI font. Pixel constants in
+   * `params` are established here already: `arrow` carries `headLength: 12`. They are not
+   * anchors and nothing positional is stored in them; move the drawing and they are
+   * unchanged, which is exactly what makes them safe under THE ANCHOR RULE.
+   *
+   * `padding` is 6 to match the 6px the renderer already insets label text by, so the text
+   * lands inside the box rather than on its border.
+   */
+  callout: define('callout', 'Callout', 2, {
+    text: 'Note',
+    charWidth: 6,
+    padding: 6,
+    boxHeight: 22,
+  }),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */
