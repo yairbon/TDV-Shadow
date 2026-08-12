@@ -9,9 +9,34 @@
  *
  * Rows are newest-first as the API returns them; `parseDailyCsv` reverses to ascending,
  * which is the order every Series invariant assumes.
+ *
+ * The first five series (AAPL/MSFT/NVDA/TSLA/SPY) are inlined below for history; every
+ * symbol added since lives in its own module under `./data/`, one export per ticker, so a
+ * refreshed snapshot touches exactly one file. `tests/unit/data/bundledSymbols.spec.ts`
+ * parses every entry here and fails on a CSV that is malformed, mis-ordered, or truncated.
  */
 
 import { makeBar, type Bar, type Timeframe } from '../data/types.js';
+import { AMD } from './data/amd.js';
+import { AMZN } from './data/amzn.js';
+import { AVGO } from './data/avgo.js';
+import { DIA } from './data/dia.js';
+import { DIS } from './data/dis.js';
+import { GLD } from './data/gld.js';
+import { GOOGL } from './data/googl.js';
+import { IWM } from './data/iwm.js';
+import { JNJ } from './data/jnj.js';
+import { JPM } from './data/jpm.js';
+import { KO } from './data/ko.js';
+import { LLY } from './data/lly.js';
+import { META } from './data/meta.js';
+import { NFLX } from './data/nflx.js';
+import { ORCL } from './data/orcl.js';
+import { QQQ } from './data/qqq.js';
+import { UNH } from './data/unh.js';
+import { V } from './data/v.js';
+import { WMT } from './data/wmt.js';
+import { XOM } from './data/xom.js';
 
 export interface SymbolDefinition {
   readonly symbol: string;
@@ -453,6 +478,99 @@ export const SYMBOLS: readonly SymbolDefinition[] = Object.freeze([
   { symbol: 'NVDA', label: 'NVDA · NVIDIA', timeframe: '1d', source: 'alpha-vantage', csv: NVDA },
   { symbol: 'TSLA', label: 'TSLA · Tesla', timeframe: '1d', source: 'alpha-vantage', csv: TSLA },
   { symbol: 'SPY', label: 'SPY · S&P 500 ETF', timeframe: '1d', source: 'alpha-vantage', csv: SPY },
+
+  // Technology
+  {
+    symbol: 'GOOGL',
+    label: 'GOOGL · Alphabet Google',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: GOOGL,
+  },
+  { symbol: 'AMZN', label: 'AMZN · Amazon', timeframe: '1d', source: 'alpha-vantage', csv: AMZN },
+  {
+    symbol: 'META',
+    label: 'META · Meta Platforms Facebook',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: META,
+  },
+  { symbol: 'AVGO', label: 'AVGO · Broadcom', timeframe: '1d', source: 'alpha-vantage', csv: AVGO },
+  {
+    symbol: 'AMD',
+    label: 'AMD · Advanced Micro Devices',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: AMD,
+  },
+  { symbol: 'NFLX', label: 'NFLX · Netflix', timeframe: '1d', source: 'alpha-vantage', csv: NFLX },
+  { symbol: 'ORCL', label: 'ORCL · Oracle', timeframe: '1d', source: 'alpha-vantage', csv: ORCL },
+
+  // Financials
+  {
+    symbol: 'JPM',
+    label: 'JPM · JPMorgan Chase',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: JPM,
+  },
+  { symbol: 'V', label: 'V · Visa', timeframe: '1d', source: 'alpha-vantage', csv: V },
+
+  // Healthcare
+  {
+    symbol: 'JNJ',
+    label: 'JNJ · Johnson & Johnson',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: JNJ,
+  },
+  {
+    symbol: 'UNH',
+    label: 'UNH · UnitedHealth Group',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: UNH,
+  },
+  { symbol: 'LLY', label: 'LLY · Eli Lilly', timeframe: '1d', source: 'alpha-vantage', csv: LLY },
+
+  // Energy
+  { symbol: 'XOM', label: 'XOM · Exxon Mobil', timeframe: '1d', source: 'alpha-vantage', csv: XOM },
+
+  // Consumer
+  { symbol: 'WMT', label: 'WMT · Walmart', timeframe: '1d', source: 'alpha-vantage', csv: WMT },
+  { symbol: 'KO', label: 'KO · Coca-Cola', timeframe: '1d', source: 'alpha-vantage', csv: KO },
+  { symbol: 'DIS', label: 'DIS · Walt Disney', timeframe: '1d', source: 'alpha-vantage', csv: DIS },
+
+  // ETFs
+  {
+    symbol: 'QQQ',
+    label: 'QQQ · Invesco Nasdaq 100 ETF',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: QQQ,
+  },
+  {
+    symbol: 'IWM',
+    label: 'IWM · iShares Russell 2000 ETF',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: IWM,
+  },
+  {
+    symbol: 'DIA',
+    label: 'DIA · SPDR Dow Jones Industrial Average ETF',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: DIA,
+  },
+  {
+    symbol: 'GLD',
+    label: 'GLD · SPDR Gold Shares ETF',
+    timeframe: '1d',
+    source: 'alpha-vantage',
+    csv: GLD,
+  },
+
   { symbol: 'DEMO', label: 'DEMO · synthetic 1m', timeframe: '1m', source: 'synthetic', seed: 7 },
 ]);
 
