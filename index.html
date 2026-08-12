@@ -529,6 +529,28 @@
         color: #fff;
       }
 
+      /* ---------- toasts ---------- */
+      #toasts {
+        position: absolute;
+        top: 12px;
+        right: 88px;
+        z-index: 40;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: none;
+      }
+      .toast {
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--up);
+        border-radius: 4px;
+        background: var(--panel);
+        color: var(--text);
+        font-size: 12px;
+        box-shadow: 0 6px 18px rgb(0 0 0 / 40%);
+      }
+
       /* ---------- context menu ---------- */
       .ctx {
         position: fixed;
@@ -698,6 +720,7 @@
       <div id="body">
         <div class="rail" id="tool-rail" role="toolbar" aria-label="Drawing tools"></div>
         <div id="chart-wrap">
+          <div id="toasts" aria-live="polite"></div>
           <div id="legend"></div>
           <div id="chart"></div>
           <button id="jump" type="button" title="Jump to the latest bar" hidden>

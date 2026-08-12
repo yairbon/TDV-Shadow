@@ -39,6 +39,8 @@ export interface Workspace {
   readonly scrollPosition: number;
   /** Presentation settings (8.3). Null when the payload predates them. */
   readonly chartSettings: ChartSettings | null;
+  /** Serialised alert store (9.2), or null when there are none. */
+  readonly alerts: string | null;
 }
 
 /** Mirrors `ChartSettingsForm` in ui/chartDialog, kept structural to avoid a UI import. */
@@ -181,6 +183,9 @@ export function loadWorkspace(): Workspace | null {
     scrollPosition:
       typeof record['scrollPosition'] === 'number' ? record['scrollPosition'] : Number.NaN,
     chartSettings: readChartSettings(record['chartSettings']),
+    // Validated by the alert store's own loadJSON, which drops bad entries field by
+    // field; storing it as a string keeps one owner for that schema.
+    alerts: typeof record['alerts'] === 'string' ? record['alerts'] : null,
   };
 }
 

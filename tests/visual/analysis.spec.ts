@@ -188,3 +188,225 @@ test.describe('measure tool', () => {
     expect(Number.isFinite(((to.price - from.price) / from.price) * 100)).toBe(true);
   });
 });
+
+// ------------------------------------------------------------------ 9.2 price alerts
+
+interface AlertHandle {
+  readonly id: string;
+  readonly price: number;
+  readonly triggered: boolean;
+  readonly side: string | null;
+}
+
+const alerts = (page: Page): Promise<AlertHandle[]> =>
+  page.evaluate(() => {
+    const chart = (window as { __chart?: { alerts: { list: () => unknown } } }).__chart;
+    return (chart?.alerts.list() ?? []) as AlertHandle[];
+  });
+
+/** Adds an alert at a plot-relative y through the context menu, as a user would. */
+async function addAlert(page: Page, y: number): Promise<AlertHandle> {
+  const box = await origin(page);
+  await page.mouse.click(400 + box.x, y + box.y, { button: 'right' });
+  await page.waitForSelector('#context-menu [data-label="Add alert here"]');
+  await page.click('#context-menu [data-label="Add alert here"]');
+  await page.waitForTimeout(250);
+  const list = await alerts(page);
+  return list[list.length - 1];
+}
+
+test.describe('price alerts', () => {
+  test('the plot menu adds an alert at the clicked price', async ({ page }) => {
+    await open(page);
+    const created = await addAlert(page, 220);
+    expect(created.triggered).toBe(false);
+
+    // The stored price is what the scale maps that pixel to, within a pixel's worth.
+    const expected = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          pickAnchor: (x: number, y: number) => { anchor: { price: number } };
+          layout: () => { plot: { left: number } };
+        };
+      }).__chart;
+      if (chart === undefined) return 0;
+      return chart.pickAnchor(chart.layout().plot.left + 10, 220).anchor.price;
+    });
+    expect(created.price).toBeCloseTo(expected, 6);
+  });
+
+  test('the alert line paints on the overlay', async ({ page }) => {
+    await open(page);
+    const ink = (): Promise<number> =>
+      page.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '#chart canvas[data-layer="overlay"]',
+        );
+        const ctx = canvas?.getContext('2d') ?? null;
+        if (canvas === null || ctx === null) return 0;
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let count = 0;
+        for (let i = 3; i < data.length; i += 4) if (data[i] > 40) count++;
+        return count;
+      });
+    const before = await ink();
+    await addAlert(page, 220);
+    expect(await ink()).toBeGreaterThan(before + 200);
+  });
+
+  test('dragging the line moves the level and re-arms it', async ({ page }) => {
+    await open(page);
+    const created = await addAlert(page, 220);
+    const box = await origin(page);
+
+    await page.mouse.move(400 + box.x, 220 + box.y);
+    await page.mouse.down();
+    await page.mouse.move(400 + box.x, 320 + box.y, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+
+    const after = (await alerts(page))[0];
+    expect(after.price).not.toBeCloseTo(created.price, 3);
+    expect(after.side).toBeNull();
+    expect(after.triggered).toBe(false);
+  });
+
+  test('dragging an alert does not pan the chart', async ({ page }) => {
+    await open(page);
+    await addAlert(page, 220);
+    const box = await origin(page);
+    const scrollOf = (): Promise<number> =>
+      page.evaluate(() => {
+        const chart = (window as { __chart?: { view: { get: () => { scrollPosition: number } } } })
+          .__chart;
+        return chart?.view.get().scrollPosition ?? 0;
+      });
+    const before = await scrollOf();
+
+    await page.mouse.move(400 + box.x, 220 + box.y);
+    await page.mouse.down();
+    await page.mouse.move(300 + box.x, 260 + box.y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    expect(await scrollOf()).toBeCloseTo(before, 6);
+  });
+
+  test('a tick that reaches the level fires a toast exactly once', async ({ page }) => {
+    await open(page);
+    // Anchored to the data so the level is genuinely reachable by the ticks below.
+    const level = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          alerts: { add: (s: string, p: number) => { price: number } };
+          series: { get: () => { bars: readonly { c: number }[] } };
+        };
+      }).__chart;
+      if (chart === undefined) return 0;
+      const bars = chart.series.get().bars;
+      const last = bars[bars.length - 1].c;
+      chart.alerts.add('AAPL', last * 1.02);
+      return last;
+    });
+    expect(level).toBeGreaterThan(0);
+
+    await page.evaluate((close) => {
+      const chart = (window as {
+        __chart?: {
+          series: { get: () => { bars: readonly { t: number; v: number }[] } };
+          pushTick: (bar: unknown) => void;
+        };
+      }).__chart;
+      if (chart === undefined) return;
+      const bars = chart.series.get().bars;
+      const last = bars[bars.length - 1];
+      // First tick establishes the side, second reaches the level, third stays above.
+      chart.pushTick({ t: last.t, o: close, h: close, l: close, c: close, v: last.v });
+      const high = close * 1.05;
+      chart.pushTick({ t: last.t, o: close, h: high, l: close, c: high, v: last.v });
+      chart.pushTick({ t: last.t, o: high, h: high, l: high, c: high, v: last.v });
+    }, level);
+    await page.waitForTimeout(400);
+
+    expect(await page.locator('#toasts .toast').count()).toBe(1);
+    expect((await alerts(page))[0].triggered).toBe(true);
+  });
+
+  test('right-clicking an alert offers re-arm and remove', async ({ page }) => {
+    await open(page);
+    await addAlert(page, 220);
+    const box = await origin(page);
+    await page.mouse.click(400 + box.x, 220 + box.y, { button: 'right' });
+    await page.waitForSelector('#context-menu [role="menuitem"]');
+    const labels = await page.$$eval('#context-menu [role="menuitem"]', (nodes) =>
+      nodes.map((n) => (n as HTMLElement).dataset['label'] ?? ''),
+    );
+    expect(labels).toEqual(['Alert armed', 'Remove alert']);
+
+    await page.click('#context-menu [data-label="Remove alert"]');
+    await page.waitForTimeout(200);
+    expect(await alerts(page)).toHaveLength(0);
+  });
+
+  test('a drawing under the cursor wins over an alert line', async ({ page }) => {
+    // An alert spans the whole plot, so without this rule a trendline crossing one would
+    // be unselectable wherever they meet.
+    await open(page);
+    await page.evaluate(() => {
+      const win = window as {
+        __tdv?: { drawShape: (k: string, a: unknown[], m: string) => unknown };
+        __chart?: {
+          series: { get: () => { bars: readonly { c: number }[] } };
+          alerts: { add: (s: string, p: number) => unknown };
+        };
+      };
+      const bars = win.__chart?.series.get().bars ?? [];
+      win.__tdv?.drawShape(
+        'trendline',
+        [
+          { barIndex: 20, price: bars[20].c },
+          { barIndex: 70, price: bars[70].c },
+        ],
+        'off',
+      );
+      // An alert exactly on the trendline's first anchor.
+      win.__chart?.alerts.add('AAPL', bars[20].c);
+    });
+    await page.waitForTimeout(300);
+
+    const handle = await page.evaluate(() => {
+      const api = (window as { __tdv?: { listDrawings: () => unknown } }).__tdv;
+      return (api === undefined ? [] : api.listDrawings()) as {
+        id: string;
+        anchorPixels: { x: number; y: number }[];
+      }[];
+    });
+    const box = await origin(page);
+    const at = handle[0].anchorPixels[0];
+    await page.mouse.click(at.x + box.x, at.y + box.y);
+    await page.waitForTimeout(200);
+
+    const selected = await page.evaluate(() => {
+      const chart = (window as { __chart?: { drawings: { selected: () => string | null } } }).__chart;
+      return chart?.drawings.selected() ?? null;
+    });
+    expect(selected).toBe(handle[0].id);
+  });
+
+  test('alerts survive a reload', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.evaluate(() => {
+      localStorage.clear();
+    });
+    await page.waitForTimeout(250);
+    const created = await addAlert(page, 240);
+    await page.waitForTimeout(900);
+
+    await page.reload();
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.waitForTimeout(500);
+    const restored = await alerts(page);
+    expect(restored).toHaveLength(1);
+    expect(restored[0].price).toBeCloseTo(created.price, 6);
+  });
+});

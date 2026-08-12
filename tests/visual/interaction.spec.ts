@@ -419,7 +419,12 @@ test.describe('context menus', () => {
 
     const where = await gutters(page);
     await rightClick(page, where.price);
-    expect(await menuLabels(page)).toEqual(['Logarithmic', 'Invert price scale', 'Auto scale']);
+    expect(await menuLabels(page)).toEqual([
+      'Logarithmic',
+      'Invert price scale',
+      'Auto scale',
+      'Add alert here',
+    ]);
     await page.click('#context-menu [data-label="Invert price scale"]');
     await page.waitForTimeout(250);
 

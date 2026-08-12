@@ -129,6 +129,13 @@ const defaultChartSettings = (base: 'dark' | 'light'): ChartSettingsForm => {
   };
 };
 let chartSettings: ChartSettingsForm = saved?.chartSettings ?? defaultChartSettings('dark');
+
+/**
+ * Alerts live in the chart, and the chart is rebuilt on a symbol change, a theme swap and
+ * a renderer swap. This is the copy that survives those rebuilds; it is refreshed from
+ * the store on every change and reloaded into each new chart.
+ */
+let alertsJson: string = saved?.alerts ?? '';
 let chart: Chart | null = null;
 const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
@@ -165,6 +172,15 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   // chart is rebuilt (theme swap, renderer swap) or it silently resets.
   if (inverted) chart.setPriceInverted(true);
   applyChartSettings(chartSettings);
+  chart.onAlert((alert) => {
+    toast(`${symbol} reached ${alert.price.toFixed(chartSettings.pricePrecision)}`);
+    status();
+  });
+  if (alertsJson !== '') chart.alerts.loadJSON(alertsJson);
+  chart.alerts.subscribe(() => {
+    alertsJson = currentChart()?.alerts.toJSON() ?? alertsJson;
+    status();
+  });
 
   installControlApi(() => chart, {
     symbol,
@@ -722,6 +738,7 @@ function setStatus(text: string): void {
 function status(): void {
   const indicators = chart?.listIndicators().length ?? 0;
   const shapes = chart?.drawings.list().length ?? 0;
+  const armed = chart?.alerts.forSymbol(symbol).filter((a) => !a.triggered).length ?? 0;
   const placing = isDrawingTool(activeTool)
     ? ` · ${activeTool} ${String(pending.length)}/${String(
         TOOL_DEFINITIONS[activeTool].anchorCount,
@@ -732,7 +749,9 @@ function status(): void {
   setStatus(
     `${String(indicators)} indicator${indicators === 1 ? '' : 's'} · ${String(shapes)} drawing${
       shapes === 1 ? '' : 's'
-    }${magnet === 'off' ? '' : ' · magnet'}${placing}`,
+    }${armed === 0 ? '' : ` · ${String(armed)} alert${armed === 1 ? '' : 's'}`}${
+      magnet === 'off' ? '' : ' · magnet'
+    }${placing}`,
   );
 }
 
@@ -1016,6 +1035,7 @@ function snapshotWorkspace(active: Chart): Workspace {
     barSpacing: view.barSpacing,
     scrollPosition: view.scrollPosition,
     chartSettings,
+    alerts: active.alerts.list().length > 0 ? active.alerts.toJSON() : null,
   };
 }
 
@@ -1326,6 +1346,29 @@ function indicatorSubmenu(active: Chart): MenuEntry[] {
   }));
 }
 
+function alertMenu(active: Chart, id: string): MenuEntry[] {
+  const alert = active.alerts.get(id);
+  return [
+    {
+      label: alert?.triggered === true ? 'Re-arm alert' : 'Alert armed',
+      disabled: alert?.triggered !== true,
+      onSelect: () => {
+        active.alerts.reset(id);
+        status();
+      },
+    },
+    'separator',
+    {
+      label: 'Remove alert',
+      danger: true,
+      onSelect: () => {
+        active.alerts.remove(id);
+        status();
+      },
+    },
+  ];
+}
+
 function scaleEntries(active: Chart): MenuEntry[] {
   return [
     {
@@ -1352,11 +1395,17 @@ function scaleEntries(active: Chart): MenuEntry[] {
   ];
 }
 
-function plotMenu(active: Chart): MenuEntry[] {
+function plotMenu(active: Chart, y: number): MenuEntry[] {
   const shapes = active.drawings.list().length;
   const indicators = active.listIndicators().length;
   return [
     { label: 'Add indicator', items: indicatorSubmenu(active) },
+    {
+      label: 'Add alert here',
+      onSelect: () => {
+        addAlertAt(y);
+      },
+    },
     { label: 'Chart settings', onSelect: openChartSettings },
     'separator',
     ...scaleEntries(active),
@@ -1427,10 +1476,93 @@ container.addEventListener('contextmenu', (event) => {
     return;
   }
 
+  const alert = active.alertAt(point.y);
   const axis = axisAt(point.x, point.y);
+  if (alert !== null && axis !== 'time') {
+    menu.open(event.clientX, event.clientY, alertMenu(active, alert.id));
+    return;
+  }
+
   const entries =
-    axis === 'price' ? scaleEntries(active) : axis === 'time' ? timeAxisMenu(active) : plotMenu(active);
+    axis === 'price'
+      ? [
+          ...scaleEntries(active),
+          'separator' as const,
+          {
+            label: 'Add alert here',
+            onSelect: () => {
+              addAlertAt(point.y);
+            },
+          },
+        ]
+      : axis === 'time'
+        ? timeAxisMenu(active)
+        : plotMenu(active, point.y);
   menu.open(event.clientX, event.clientY, entries);
+});
+
+// ---------------------------------------------------------------- alerts
+
+/**
+ * Alert lines (9.2).
+ *
+ * Levels live in the chart's alert store in PRICE space, so an alert survives pan, zoom
+ * and a log-scale switch exactly as a drawing does. Dragging one re-arms it, which the
+ * store handles: a level you just moved has not been reached yet.
+ */
+let alertDrag: string | null = null;
+
+function toast(text: string): void {
+  const host = el('#toasts');
+  if (host === null) return;
+  const node = document.createElement('div');
+  node.className = 'toast';
+  node.textContent = text;
+  host.append(node);
+  // Removed on a timer rather than on animation end: a page that never animates (reduced
+  // motion, a background tab) would otherwise accumulate toasts forever.
+  window.setTimeout(() => {
+    node.remove();
+  }, 6000);
+}
+
+function addAlertAt(y: number): void {
+  const active = currentChart();
+  if (active === null) return;
+  const price = active.pickAnchor(active.layout().plot.left + 10, y, 'off').anchor.price;
+  if (!Number.isFinite(price)) return;
+  active.alerts.add(symbol, price);
+  status();
+}
+
+container.addEventListener(
+  'pointerdown',
+  (event) => {
+    const active = currentChart();
+    if (active === null || event.button !== 0 || activeTool !== '' || event.shiftKey) return;
+    const point = localPoint(event);
+    const alert = active.alertAt(point.y);
+    // Drawings win: an alert line spans the whole plot, so without this a trendline
+    // crossing one would become unselectable wherever they meet.
+    if (alert === null || active.hitTestAt(point.x, point.y) !== null) return;
+    alertDrag = alert.id;
+    event.stopPropagation();
+    event.preventDefault();
+  },
+  true,
+);
+
+window.addEventListener('pointermove', (event) => {
+  const id = alertDrag;
+  const active = currentChart();
+  if (id === null || active === null) return;
+  const point = localPoint(event);
+  const price = active.pickAnchor(active.layout().plot.left + 10, point.y, magnet).anchor.price;
+  if (Number.isFinite(price)) active.alerts.move(id, price);
+});
+
+window.addEventListener('pointerup', () => {
+  alertDrag = null;
 });
 
 // ---------------------------------------------------------------- measure tool

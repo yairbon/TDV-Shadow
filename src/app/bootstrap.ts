@@ -27,8 +27,11 @@ import { candleGeometry } from '../renderer/scale/timeScale.js';
 import { maxVolume } from '../renderer/scale/volumeScale.js';
 import { createGlSeriesLayer } from '../renderer/webgl/glSeriesLayer.js';
 import { drawDerivedSeries } from '../renderer/layers/derivedSeriesLayer.js';
+import { createAlertStore, type Alert, type AlertStore } from './alerts.js';
 import {
+  drawAlerts,
   drawDrawings,
+  type AlertGeometry,
   drawIndicatorOverlay,
   drawIndicatorPane,
   drawLastPrice,
@@ -120,6 +123,11 @@ export interface GeometryDump {
 export interface Chart {
   readonly series: SeriesStore;
   readonly drawings: DrawingStore;
+  readonly alerts: AlertStore;
+  /** Fired alerts, in order, since the listener was attached (9.2). */
+  onAlert(listener: (alert: Alert) => void): () => void;
+  /** Alert nearest `y` within `tolerance` CSS px, for dragging. */
+  alertAt(y: number, tolerance?: number): Alert | null;
   /** Active chart type; resampling types are excluded from the app picker (see below). */
   chartType(): ChartType;
   setChartType(type: ChartType, params?: ChartTypeParams): void;
@@ -217,10 +225,14 @@ export function createChart(o: ChartOptions): Chart {
   const features = createFeatureState();
   features.chartType = o.chartType ?? 'candles';
   const drawings = createDrawingStore();
+  const alerts = createAlertStore();
+  const alertListeners = new Set<(alert: Alert) => void>();
   const seriesMemo = createSeriesMemo();
   const indicatorMemo = createIndicatorMemo();
   let handleCounter = 0;
   let lastGeometry: readonly DrawingGeometry[] = [];
+  /** Alert pixel positions from the last frame — the same trick hit-testing drawings uses. */
+  let lastAlertGeometry: readonly AlertGeometry[] = [];
   let priceZoom = 1;
   let priceInverted = false;
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
@@ -414,6 +426,21 @@ export function createChart(o: ChartOptions): Chart {
     lastGeometry = geometries;
     drawDrawings(ctx, geometries, input.layout.plot, theme, drawings.selected());
 
+    lastAlertGeometry = alerts.forSymbol(o.symbol).map((alert) => ({
+      id: alert.id,
+      y: input.priceScale.y(asPrice(alert.price)),
+      price: alert.price,
+      triggered: alert.triggered,
+    }));
+    drawAlerts(
+      ctx,
+      lastAlertGeometry,
+      input.layout.plot,
+      input.layout.priceGutter,
+      theme,
+      pricePrecision,
+    );
+
     if (bars.length > 0) {
       const last = bars[bars.length - 1];
       drawLastPrice(
@@ -562,6 +589,10 @@ export function createChart(o: ChartOptions): Chart {
     scheduler.invalidate(DirtyFlags.Overlay);
   });
 
+  const unsubscribeAlerts = alerts.subscribe(() => {
+    scheduler.invalidate(DirtyFlags.Overlay);
+  });
+
   // --- input --------------------------------------------------------------
   const pointer: PointerBindings = bindPointer({
     target: canvases.hitTarget,
@@ -616,6 +647,20 @@ export function createChart(o: ChartOptions): Chart {
     view,
     snapshots,
     drawings,
+    alerts,
+    onAlert(listener) {
+      alertListeners.add(listener);
+      return () => alertListeners.delete(listener);
+    },
+    alertAt(y, tolerance = 6) {
+      let best: { id: string; distance: number } | null = null;
+      for (const entry of lastAlertGeometry) {
+        const distance = Math.abs(entry.y - y);
+        if (distance > tolerance) continue;
+        if (best === null || distance < best.distance) best = { id: entry.id, distance };
+      }
+      return best === null ? null : alerts.get(best.id);
+    },
     chartType: () => features.chartType,
     setChartType(type, params) {
       features.chartType = type;
@@ -762,13 +807,21 @@ export function createChart(o: ChartOptions): Chart {
     },
     layout: () => layout,
     pushTick(bar: Bar): void {
-      if (series.replaceLast(bar)) scheduler.invalidate(DirtyFlags.Series | DirtyFlags.Overlay);
+      if (!series.replaceLast(bar)) return;
+      scheduler.invalidate(DirtyFlags.Series | DirtyFlags.Overlay);
+      // Alerts are checked HERE rather than in a timer: the tick is the only moment new
+      // price information exists, and polling would either miss bars or re-check the
+      // same one hundreds of times.
+      for (const fired of alerts.observe(o.symbol, bar)) {
+        for (const listener of alertListeners) listener(fired);
+      }
     },
     geometry,
     dispose(): void {
       containerObserver?.disconnect();
       unsubscribeView();
       unsubscribeDrawings();
+      unsubscribeAlerts();
       pointer.dispose();
       scheduler.dispose();
       for (const surface of liveSurfaces()) surface.dispose();

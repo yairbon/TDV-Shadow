@@ -472,3 +472,57 @@ export function drawMeasure(
   ctx.textAlign = 'left';
   ctx.restore();
 }
+
+/** One alert level, already projected. */
+export interface AlertGeometry {
+  readonly id: string;
+  readonly y: number;
+  readonly price: number;
+  readonly triggered: boolean;
+}
+
+/**
+ * Draws alert levels across the plot with a price tag in the gutter.
+ *
+ * A triggered alert is drawn solid and in the accent colour; an armed one is dashed and
+ * dim. The distinction has to be visible at a glance — an alert that has already fired is
+ * history, and reading it as a live level is how people act on a stale line.
+ */
+export function drawAlerts(
+  ctx: CanvasRenderingContext2D,
+  alerts: readonly AlertGeometry[],
+  plot: Rect,
+  gutter: Rect,
+  theme: Theme,
+  pricePrecision: number,
+): void {
+  if (alerts.length === 0) return;
+  ctx.save();
+  ctx.font = theme.typography.font;
+  ctx.textBaseline = 'middle';
+
+  for (const alert of alerts) {
+    if (alert.y < plot.top - 1 || alert.y > plot.top + plot.height + 1) continue;
+    const color = alert.triggered ? theme.upBody : theme.overlayLine;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash(alert.triggered ? [] : [5, 4]);
+    ctx.globalAlpha = alert.triggered ? 1 : 0.75;
+    ctx.beginPath();
+    ctx.moveTo(plot.left, snapLine(alert.y));
+    ctx.lineTo(plot.left + plot.width, snapLine(alert.y));
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    const label = alert.price.toFixed(pricePrecision);
+    const height = theme.typography.lineHeight + 4;
+    ctx.fillStyle = color;
+    ctx.fillRect(gutter.left, snapFill(alert.y - height / 2), gutter.width, height);
+    ctx.fillStyle = theme.labelText;
+    ctx.fillText(label, gutter.left + 6, alert.y);
+  }
+
+  ctx.restore();
+}
