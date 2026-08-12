@@ -27,6 +27,7 @@ import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
 import { createToolbarOverflow } from './ui/toolbarOverflow.js';
+import { createObjectTree, type ObjectRow } from './ui/objectTree.js';
 import { searchSymbols, type MatchRange } from './app/symbolSearch.js';
 import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
@@ -348,6 +349,11 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   if (saved !== undefined) chart.drawings.loadJSON(saved);
   for (const spec of indicatorSpecs) chart.addIndicator(spec.id, spec.params, spec.styles);
   applyCompare(chart);
+  // The tree must follow edits made on the canvas — a drag, a delete, a selection — not
+  // only its own buttons, or it starts describing a chart that has moved on.
+  chart.drawings.subscribe(() => {
+    refreshObjectTree();
+  });
   // Fit the series to the pane on load. A fixed default spacing leaves 100 daily bars
   // hugging the right edge of a wide screen with dead space beside them, which is the
   // first thing that reads as unfinished.
@@ -1290,7 +1296,99 @@ if (rail !== null) {
     status();
   });
   rail.append(eraseButton);
+
+  const objectsButton = document.createElement('button');
+  objectsButton.type = 'button';
+  objectsButton.id = 'objects-open';
+  objectsButton.title = 'Objects on the chart';
+  objectsButton.setAttribute('aria-label', objectsButton.title);
+  objectsButton.innerHTML =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>';
+  objectsButton.addEventListener('click', () => {
+    if (objectTree.isOpen()) objectTree.close();
+    else objectTree.open(objectRows());
+  });
+  rail.append(objectsButton);
 }
+
+/**
+ * The chart's drawings as rows, newest first.
+ *
+ * Newest first because the thing you just drew and cannot find is the thing you came here
+ * to hide, and the store keeps paint order (oldest first) for the renderer's benefit.
+ */
+function objectRows(): ObjectRow[] {
+  const target = currentChart();
+  if (target === null) return [];
+  const selected = target.drawings.selected();
+  return [...target.drawings.list()].reverse().map((drawing) => ({
+    id: drawing.id,
+    label: TOOL_DEFINITIONS[drawing.kind].label,
+    detail: describeDrawing(drawing.anchors),
+    visible: drawing.visible,
+    locked: drawing.locked,
+    selected: drawing.id === selected,
+  }));
+}
+
+/** A short, stable description: where it is, in the units the user reads off the axes. */
+function describeDrawing(anchors: readonly { barIndex: number; price: number }[]): string {
+  if (anchors.length === 0) return '';
+  const decimals = chartSettings.pricePrecision;
+  if (anchors.length === 1) return anchors[0].price.toFixed(decimals);
+  const first = anchors[0];
+  const last = anchors[anchors.length - 1];
+  const bars = Math.abs(Math.round(last.barIndex - first.barIndex));
+  return `${first.price.toFixed(decimals)} → ${last.price.toFixed(decimals)} · ${String(bars)} bars`;
+}
+
+/** Re-renders the tree if it is showing. Cheap enough to call from every store change. */
+function refreshObjectTree(): void {
+  objectTree.update(objectRows());
+}
+
+const objectTree = createObjectTree({
+  onSelect(id) {
+    currentChart()?.drawings.select(id);
+    refreshObjectTree();
+  },
+  onToggleVisible(id) {
+    const target = currentChart();
+    const drawing = target?.drawings.get(id) ?? null;
+    if (target === null || drawing === null) return;
+    capture();
+    target.drawings.update(id, { visible: !drawing.visible });
+    refreshObjectTree();
+  },
+  onToggleLocked(id) {
+    const target = currentChart();
+    const drawing = target?.drawings.get(id) ?? null;
+    if (target === null || drawing === null) return;
+    capture();
+    target.drawings.update(id, { locked: !drawing.locked });
+    refreshObjectTree();
+  },
+  onRemove(id) {
+    capture();
+    currentChart()?.drawings.remove(id);
+    refreshObjectTree();
+    status();
+  },
+  onAllVisible(visible) {
+    const target = currentChart();
+    if (target === null) return;
+    capture();
+    for (const drawing of target.drawings.list()) target.drawings.update(drawing.id, { visible });
+    refreshObjectTree();
+  },
+  onAllLocked(locked) {
+    const target = currentChart();
+    if (target === null) return;
+    capture();
+    for (const drawing of target.drawings.list()) target.drawings.update(drawing.id, { locked });
+    refreshObjectTree();
+  },
+});
 
 // ---------------------------------------------------------------- placement
 

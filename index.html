@@ -244,6 +244,142 @@
         display: none;
       }
 
+      /* ---------- object tree ---------- */
+      #object-tree {
+        position: absolute;
+        top: calc(var(--topbar) + 8px);
+        right: 12px;
+        z-index: 55;
+        width: 300px;
+        max-height: 60vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+        overflow: hidden;
+      }
+      #object-tree[hidden] {
+        display: none;
+      }
+      .ot-head {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 4px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      .ot-title {
+        font-weight: 600;
+        font-size: 13px;
+        margin-right: auto;
+      }
+      .ot-bulk {
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-dim);
+        font: inherit;
+        font-size: 11px;
+        padding: 3px 7px;
+        cursor: pointer;
+      }
+      .ot-bulk:hover {
+        background: var(--panel-hover);
+        color: var(--text);
+      }
+      .ot-close {
+        border: 0;
+        background: transparent;
+        color: var(--text-dim);
+        font: inherit;
+        cursor: pointer;
+        padding: 2px 4px;
+      }
+      .ot-list {
+        list-style: none;
+        margin: 0;
+        padding: 4px;
+        overflow-y: auto;
+      }
+      .ot-empty {
+        padding: 14px 10px;
+        color: var(--text-dim);
+        font-size: 12px;
+        text-align: center;
+      }
+      .ot-row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        border-radius: 4px;
+      }
+      .ot-row:hover {
+        background: var(--panel-hover);
+      }
+      .ot-row.selected {
+        background: color-mix(in srgb, var(--accent) 22%, transparent);
+      }
+      .ot-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        border: 0;
+        background: transparent;
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        text-align: left;
+        padding: 6px 6px;
+        cursor: pointer;
+      }
+      .ot-detail {
+        color: var(--text-dim);
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .ot-icon {
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--text-dim);
+        cursor: pointer;
+      }
+      .ot-icon:hover {
+        background: var(--bg);
+        color: var(--text);
+      }
+      /* A hidden or locked object reads as dimmed, so the list is scannable without
+         inspecting each icon. */
+      .ot-icon[aria-pressed='false'][aria-label='Show'] {
+        color: var(--down);
+      }
+      .ot-icon[aria-pressed='true'][aria-label='Unlock'] {
+        color: var(--accent);
+      }
+      .ot-icon svg {
+        width: 15px;
+        height: 15px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+
       /* ---------- body: left rail + chart ---------- */
       #body {
         display: flex;

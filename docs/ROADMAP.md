@@ -194,8 +194,14 @@ Three more from the same pass, each of which only shows up on screen:
   projected back through the PRIMARY's price scale, so log mode and axis inversion apply to
   it for free rather than needing a second scale that could drift out of agreement.
 
-Still open in Tier 2: the object tree, multiple price scales with resizable panes, and
-named layouts.
+- **Object tree.** `Drawing` has carried `visible` and `locked` since the store was
+  written, and both were honoured by the renderer and the pointer layer — but the only way
+  to reach either was the per-drawing context menu, so you had to find the shape on the
+  plot before you could hide it, which is exactly the situation where you cannot find it.
+  Hide/lock per row and in bulk, remove, and select; the panel subscribes to the store so
+  an edit made on the canvas keeps it honest.
+
+Still open in Tier 2: multiple price scales with resizable panes, and named layouts.
 
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
