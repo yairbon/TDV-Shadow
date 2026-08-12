@@ -123,6 +123,7 @@ const defaultChartSettings = (base: 'dark' | 'light'): ChartSettingsForm => {
   const theme = base === 'light' ? LIGHT_THEME : DARK_THEME;
   return {
     showGrid: true,
+    timeZone: 'UTC',
     pricePrecision: 2,
     rightMargin: 2,
     upColor: theme.upBody,
@@ -213,6 +214,7 @@ function applyChartSettings(next: ChartSettingsForm): void {
   const base = themeName === 'light' ? LIGHT_THEME : DARK_THEME;
   active.updateSettings({
     showGrid: next.showGrid,
+    timeZone: next.timeZone,
     pricePrecision: next.pricePrecision,
     rightMargin: next.rightMargin,
     // Volume keeps the theme's own translucent pair. Tinting it with the candle colour

@@ -59,6 +59,7 @@ import { createChartRenderer, type LayerContexts } from '../renderer/index.js';
 import { createScheduler, DirtyFlags, type DirtyMask } from '../renderer/scheduler.js';
 import { createSurface, type Surface } from '../renderer/surface.js';
 import { DARK_THEME, type Theme } from '../renderer/theme.js';
+import type { TimeZone } from '../renderer/scale/timezone.js';
 import { createChartCanvases, type ChartCanvases, type LayerName } from '../ui/chartCanvas.js';
 import { snapLine } from '../renderer/pixel.js';
 
@@ -76,6 +77,8 @@ export type RendererMode = 'canvas2d' | 'webgl';
 /** Presentation settings that change no data and force no rebuild. */
 export interface ChartSettings {
   readonly theme: Theme;
+  /** IANA zone for time LABELS (10.2). The data stays UTC epoch ms. */
+  readonly timeZone: TimeZone;
   /** Decimal cap for price labels. */
   readonly pricePrecision: number;
   readonly showGrid: boolean;
@@ -250,6 +253,7 @@ export function createChart(o: ChartOptions): Chart {
   let pricePrecision = o.pricePrecision ?? 2;
   let showGrid = true;
   let rightMargin = 2;
+  let timeZone: TimeZone = 'UTC';
   const canvases = createChartCanvases(o.container);
 
   const series = createSeriesStore({
@@ -616,6 +620,7 @@ export function createChart(o: ChartOptions): Chart {
       priceRange: null,
       priceScaleInverted: priceInverted,
       showGrid,
+      timeZone,
       autoscaleCache,
     });
 
@@ -635,6 +640,7 @@ export function createChart(o: ChartOptions): Chart {
         priceRange: makePriceRange(centre - half, centre + half),
         priceScaleInverted: priceInverted,
         showGrid,
+        timeZone,
         autoscaleCache,
       });
     }
@@ -869,9 +875,10 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.Crosshair);
     },
     measure: () => measure,
-    settings: () => ({ theme, pricePrecision, showGrid, rightMargin }),
+    settings: () => ({ theme, timeZone, pricePrecision, showGrid, rightMargin }),
     updateSettings(patch) {
       theme = patch.theme ?? theme;
+      timeZone = patch.timeZone ?? timeZone;
       pricePrecision = patch.pricePrecision ?? pricePrecision;
       showGrid = patch.showGrid ?? showGrid;
       rightMargin = patch.rightMargin ?? rightMargin;

@@ -94,7 +94,7 @@ export function drawCrosshairLayer(ctx: CanvasRenderingContext2D, f: FrameInput)
     drawTag(
       ctx,
       f,
-      formatCrosshairTime(stamp, f.timeframeMs),
+      formatCrosshairTime(stamp, f.timeframeMs, f.timeZone),
       verticalX,
       timeGutter.top + timeGutter.height / 2,
       timeGutter,

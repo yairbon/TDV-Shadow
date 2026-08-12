@@ -588,6 +588,64 @@ test.describe('chart settings', () => {
     expect(settings).toMatchObject({ pricePrecision: 2, showGrid: true });
   });
 
+  test('changing the timezone relabels the time axis', async ({ page }) => {
+    // The data stays UTC epoch ms (mandate #5); only the labels move. Proving that means
+    // reading the grid layer, since the labels are canvas text and not DOM.
+    //
+    // An INTRADAY series, deliberately: on daily bars a whole-hour shift usually leaves
+    // every day-of-month label exactly where it was, so the test would pass or fail on
+    // which zone happened to be picked rather than on the feature.
+    await page.goto('/?seed=7&bars=600&live=0');
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.evaluate(() => {
+      localStorage.clear();
+    });
+    await page.waitForTimeout(400);
+    const before = await ink(page, 'grid');
+    expect(before).toBeGreaterThan(1000);
+
+    await openChartSettings(page);
+    await page.selectOption('#chart-timezone', 'Asia/Tokyo');
+    await page.waitForTimeout(300);
+    await page.click('#chart-ok');
+    await page.waitForTimeout(300);
+
+    expect(await ink(page, 'grid')).not.toBe(before);
+    const zone = await page.evaluate(() => {
+      const chart = (window as { __chart?: { settings: () => { timeZone: string } } }).__chart;
+      return chart?.settings().timeZone ?? '';
+    });
+    expect(zone).toBe('Asia/Tokyo');
+  });
+
+  test('the timezone never moves the bars themselves', async ({ page }) => {
+    // Guards the mandate: a display timezone is a label concern, so bar times and bar
+    // positions must be byte-identical before and after.
+    await open(page);
+    await page.waitForTimeout(300);
+    const sample = (): Promise<string> =>
+      page.evaluate(() => {
+        const chart = (window as {
+          __chart?: { series: { get: () => { bars: readonly { t: number }[] } } };
+        }).__chart;
+        const fn = (window as { __chartGeometry?: () => unknown }).__chartGeometry;
+        const g = fn === undefined ? null : (fn() as { candles?: { centreX: number }[] } | null);
+        const bars = chart?.series.get().bars ?? [];
+        return JSON.stringify({
+          times: bars.slice(0, 20).map((b) => b.t),
+          xs: (g?.candles ?? []).slice(0, 20).map((c) => c.centreX),
+        });
+      });
+
+    const before = await sample();
+    await openChartSettings(page);
+    await page.selectOption('#chart-timezone', 'America/New_York');
+    await page.waitForTimeout(300);
+    await page.click('#chart-ok');
+    await page.waitForTimeout(300);
+    expect(await sample()).toBe(before);
+  });
+
   test('chart settings survive a reload', async ({ page }) => {
     await page.goto('/');
     await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);

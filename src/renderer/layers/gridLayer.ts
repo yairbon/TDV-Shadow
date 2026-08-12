@@ -7,6 +7,7 @@
  * element (mandate #1).
  */
 
+import { asPixel } from '../../data/types.js';
 import type { FrameInput } from '../frame.js';
 import { rectBottom, rectRight } from '../layout.js';
 import { snapFill, snapLine } from '../pixel.js';
@@ -40,13 +41,15 @@ export function drawGridLayer(ctx: CanvasRenderingContext2D, f: FrameInput): voi
   if (content.width <= 0 || content.height <= 0) return;
 
   const ticks = priceTicks(f.priceScale, theme.typography.lineHeight, f.pricePrecision);
-  const times = timeTicks(
+  const axis = timeTicks(
     f.snapshot.series.bars,
     f.visible,
     f.timeScale,
     f.timeframeMs,
     theme.density.minTimeTickSpacing,
+    f.timeZone,
   );
+  const times = axis.ticks;
 
   // --- gridlines, clipped to the content rect -------------------------------
   ctx.save();
@@ -64,6 +67,18 @@ export function drawGridLayer(ctx: CanvasRenderingContext2D, f: FrameInput): voi
     }
     for (const tick of times) {
       drawVerticalRule(ctx, tick.x, content.top, rectBottom(content));
+    }
+    ctx.stroke();
+  }
+
+  // Session separators (10.2): a calendar-day boundary in the display timezone. Drawn
+  // whether or not gridlines are on — a session break is structure, not decoration, and
+  // it is what tells a gap in trading apart from a gap in the data.
+  if (axis.sessionBreaks.length > 0 && axis.sessionBreaks.length < content.width) {
+    ctx.strokeStyle = theme.axisLine;
+    ctx.beginPath();
+    for (const x of axis.sessionBreaks) {
+      drawVerticalRule(ctx, asPixel(x), content.top, rectBottom(content));
     }
     ctx.stroke();
   }

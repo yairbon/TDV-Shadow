@@ -7,10 +7,21 @@
  * the selection and the undo stack every time.
  */
 
-import { checkboxField, colorField, createSheet, footer, numberField, sheetForm } from './sheet.js';
+import { TIME_ZONES } from '../renderer/scale/timezone.js';
+import {
+  checkboxField,
+  colorField,
+  createSheet,
+  footer,
+  numberField,
+  selectField,
+  sheetForm,
+} from './sheet.js';
 
 export interface ChartSettingsForm {
   readonly showGrid: boolean;
+  /** IANA zone for time labels. */
+  readonly timeZone: string;
   readonly pricePrecision: number;
   /** Empty bars kept to the right of the newest one. */
   readonly rightMargin: number;
@@ -74,6 +85,15 @@ export function createChartDialog(host: HTMLElement = document.body): ChartDialo
           value: current.rightMargin,
           onChange: (rightMargin) => {
             patch({ rightMargin });
+          },
+        }),
+        selectField({
+          label: 'Timezone',
+          id: 'chart-timezone',
+          options: [...TIME_ZONES],
+          value: current.timeZone,
+          onChange: (timeZone) => {
+            patch({ timeZone });
           },
         }),
         colorField({

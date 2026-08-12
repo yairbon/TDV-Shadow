@@ -46,6 +46,7 @@ export interface Workspace {
 /** Mirrors `ChartSettingsForm` in ui/chartDialog, kept structural to avoid a UI import. */
 export interface ChartSettings {
   readonly showGrid: boolean;
+  readonly timeZone: string;
   readonly pricePrecision: number;
   readonly rightMargin: number;
   readonly upColor: string;
@@ -71,6 +72,9 @@ function readChartSettings(value: unknown): ChartSettings | null {
   if (!isColor(record['upColor']) || !isColor(record['downColor'])) return null;
   return {
     showGrid: record['showGrid'],
+    // Defaulted, not rejected: a payload written before timezones existed is still
+    // perfectly usable, and an unknown zone falls back to UTC in the formatter anyway.
+    timeZone: typeof record['timeZone'] === 'string' ? record['timeZone'] : 'UTC',
     pricePrecision: Math.round(precision),
     rightMargin: Math.round(margin),
     upColor: record['upColor'],

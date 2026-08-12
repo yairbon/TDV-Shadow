@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { asPrice } from '../../../src/data/types.js';
+import { asBarIndex, asPrice } from '../../../src/data/types.js';
 import { makeRect } from '../../../src/renderer/layout.js';
 import { makePriceRange, makePriceScale } from '../../../src/renderer/scale/priceScale.js';
 import { makeTimeScale } from '../../../src/renderer/scale/timeScale.js';
@@ -172,7 +172,7 @@ describe('time ticks', () => {
     const bars = makeBars(600, 60_000);
     const scale = makeTimeScale(bars.length - 1, 8, plot);
     const range = scale.visibleRange(bars.length);
-    const ticks = timeTicks(bars, range, scale, 60_000, 60);
+    const ticks = timeTicks(bars, range, scale, 60_000, 60).ticks;
 
     expect(ticks.length).toBeGreaterThan(0);
     expect(ticks.length).toBeLessThan(range.count);
@@ -189,7 +189,7 @@ describe('time ticks', () => {
       const bars = makeBars(4_000, 60_000);
       const scale = makeTimeScale(bars.length - 1, spacing, plot);
       const range = scale.visibleRange(bars.length);
-      const ticks = timeTicks(bars, range, scale, 60_000, 60);
+      const ticks = timeTicks(bars, range, scale, 60_000, 60).ticks;
       for (let i = 1; i < ticks.length; i++) {
         expect(ticks[i].x - ticks[i - 1].x).toBeGreaterThanOrEqual(60);
       }
@@ -205,7 +205,7 @@ describe('time ticks', () => {
     }
     const scale = makeTimeScale(bars.length - 1, 90, plot);
     const range = scale.visibleRange(bars.length);
-    const ticks = timeTicks(bars, range, scale, 86_400_000, 60);
+    const ticks = timeTicks(bars, range, scale, 86_400_000, 60).ticks;
     const major = ticks.filter((t) => t.major);
     expect(major.length).toBe(1);
     expect(major[0].label).toBe('2026');
@@ -214,11 +214,82 @@ describe('time ticks', () => {
 
   it('returns nothing for an empty range', () => {
     const scale = makeTimeScale(0, 8, plot);
-    expect(timeTicks([], scale.visibleRange(0), scale, 60_000, 60)).toHaveLength(0);
+    expect(timeTicks([], scale.visibleRange(0), scale, 60_000, 60).ticks).toHaveLength(0);
   });
 
   it('formats the crosshair stamp in UTC', () => {
     expect(formatCrosshairTime(FIXTURE_START, 60_000)).toBe('11 Aug 00:00');
     expect(formatCrosshairTime(FIXTURE_START, 86_400_000)).toBe('11 Aug 2025');
+  });
+});
+
+describe('session breaks and timezone — 10.2', () => {
+  /** Three UTC days of hourly bars, starting at midnight UTC. */
+  const hourly = (() => {
+    const start = Date.UTC(2026, 0, 12, 0, 0);
+    const out = [];
+    for (let i = 0; i < 72; i++) out.push(bar(start + i * 3_600_000, 100, 101, 99, 100.5, 10));
+    return out;
+  })();
+
+  const axisFor = (zone: string) => {
+    const scale = makeTimeScale(hourly.length - 1, 9, plot);
+    return timeTicks(hourly, scale.visibleRange(hourly.length), scale, 3_600_000, 60, zone);
+  };
+
+  it('marks one session break per calendar day boundary', () => {
+    // 72 hourly bars spanning three days have two interior midnights.
+    expect(axisFor('UTC').sessionBreaks).toHaveLength(2);
+  });
+
+  it('moves the break when the display timezone changes', () => {
+    // Midnight in Tokyo is 15:00 UTC, so the separators land on different bars — the
+    // whole point of a display timezone on an intraday chart. The same 72-hour window
+    // even contains a different NUMBER of Tokyo midnights (three) than UTC ones (two),
+    // because the window starts mid-morning in Tokyo.
+    const utc = axisFor('UTC').sessionBreaks;
+    const tokyo = axisFor('Asia/Tokyo').sessionBreaks;
+    expect(utc).toHaveLength(2);
+    expect(tokyo).toHaveLength(3);
+    for (const x of tokyo) expect(utc).not.toContain(x);
+  });
+
+  it('emits no session breaks for daily bars, where every bar is its own day', () => {
+    const daily = [];
+    const start = Date.UTC(2026, 0, 1);
+    for (let i = 0; i < 30; i++) daily.push(bar(start + i * 86_400_000, 100, 101, 99, 100.5, 10));
+    const scale = makeTimeScale(daily.length - 1, 20, plot);
+    const axis = timeTicks(daily, scale.visibleRange(daily.length), scale, 86_400_000, 60);
+    expect(axis.sessionBreaks).toHaveLength(0);
+  });
+
+  it('labels intraday ticks in the display timezone', () => {
+    const utc = axisFor('UTC').ticks;
+    const tokyo = axisFor('Asia/Tokyo').ticks;
+    expect(utc.length).toBeGreaterThan(0);
+    expect(tokyo.length).toBeGreaterThan(0);
+    // Same bars, same geometry, different clock faces.
+    expect(tokyo.map((t) => t.label)).not.toEqual(utc.map((t) => t.label));
+  });
+
+  it('a weekend gap consumes no width (§5 index space)', () => {
+    // The other half of 10.2, and it is a property of index space rather than of new
+    // code: Friday and the following Monday are adjacent INDICES, so they are exactly one
+    // bar apart on screen no matter how many days of wall clock separate them.
+    const friday = Date.UTC(2026, 0, 9);
+    const bars = [
+      bar(friday, 100, 101, 99, 100.5, 10),
+      bar(friday + 3 * 86_400_000, 100, 101, 99, 100.5, 10),
+      bar(friday + 4 * 86_400_000, 100, 101, 99, 100.5, 10),
+    ];
+    const scale = makeTimeScale(bars.length - 1, 20, plot);
+    expect(scale.x(asBarIndex(1)) - scale.x(asBarIndex(0))).toBeCloseTo(20, 9);
+    expect(scale.x(asBarIndex(2)) - scale.x(asBarIndex(1))).toBeCloseTo(20, 9);
+  });
+
+  it('formats the crosshair stamp in the display timezone', () => {
+    const t = Date.UTC(2026, 0, 15, 12, 0);
+    expect(formatCrosshairTime(t, 3_600_000, 'UTC')).toContain('12:00');
+    expect(formatCrosshairTime(t, 3_600_000, 'America/New_York')).toContain('07:00');
   });
 });

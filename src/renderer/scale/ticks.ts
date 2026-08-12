@@ -14,6 +14,7 @@ import { asBarIndex, asPixel, type Bar, type BarIndex, type Pixel, type Price } 
 import { asPrice } from '../../data/types.js';
 import type { PriceScale } from './priceScale.js';
 import type { TimeScale, VisibleRange } from './timeScale.js';
+import { offsetMinutes, shiftToZone, type TimeZone } from './timezone.js';
 
 // ---------------------------------------------------------------------------
 // Price ticks (§8)
@@ -283,6 +284,8 @@ export type TimeLabelStyle = 'time' | 'day' | 'month' | 'year';
 
 /** UTC-only formatting. Called once per emitted tick, never per bar. */
 export function formatTimeLabel(t: number, style: TimeLabelStyle): string {
+  // `t` is expected to be already shifted into the display zone by the caller — the
+  // formatters below are, and remain, pure UTC readers.
   const d = new Date(t);
   switch (style) {
     case 'time':
@@ -297,11 +300,13 @@ export function formatTimeLabel(t: number, style: TimeLabelStyle): string {
 }
 
 /**
- * Full timestamp for the crosshair's time tag (§10). UTC, like every other label —
- * local-time arithmetic never enters the chart.
+ * Full timestamp for the crosshair's time tag (§10).
+ *
+ * The DATA stays UTC epoch ms (mandate #5); `zone` shifts the printed text only, and the
+ * shift happens here rather than anywhere upstream.
  */
-export function formatCrosshairTime(t: number, tfMs: number): string {
-  const d = new Date(t);
+export function formatCrosshairTime(t: number, tfMs: number, zone: TimeZone = 'UTC'): string {
+  const d = new Date(shiftToZone(t, zone));
   const day = `${pad2(d.getUTCDate())} ${MONTH_NAMES[d.getUTCMonth()]}`;
   if (tfMs >= MS_DAY) return `${day} ${String(d.getUTCFullYear())}`;
   return `${day} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
@@ -333,26 +338,57 @@ function labelStyleFor(unit: TimeUnit, monthChanged: boolean, yearChanged: boole
  * Ticks closer than `minSpacingPx` are dropped, except that a major tick displaces
  * the minor one it collides with.
  */
+/**
+ * Ticks plus the session separators for the same range (10.2).
+ *
+ * Both come out of one pass because both are boundary tests over the same bars, and at
+ * 100k visible bars a second scan is a second few milliseconds.
+ */
+export interface TimeAxis {
+  readonly ticks: readonly TimeTick[];
+  /**
+   * Unsnapped X of each calendar-day boundary, in the display timezone. Empty for daily
+   * and coarser timeframes, where every bar is already its own day.
+   */
+  readonly sessionBreaks: readonly number[];
+}
+
 export function timeTicks(
   bars: readonly Bar[],
   range: VisibleRange,
   scale: TimeScale,
   tfMs: number,
   minSpacingPx: number,
-): TimeTick[] {
+  zone: TimeZone = 'UTC',
+): TimeAxis {
   const out: TimeTick[] = [];
-  if (range.isEmpty || bars.length === 0) return out;
+  const breaks: number[] = [];
+  if (range.isEmpty || bars.length === 0) return { ticks: out, sessionBreaks: breaks };
 
   const unit = chooseTimeUnit(scale.barSpacing, tfMs, minSpacingPx);
   const from: number = range.from;
   const to: number = range.to;
 
+  // A zone's offset is constant across a screenful of bars except across a DST switch.
+  // Resolving it once when it is constant keeps a Map lookup and a string concatenation
+  // out of a loop that runs over every visible bar; the per-bar path is only taken on the
+  // rare range that straddles a transition, where it is required for correctness.
+  const startOffset = offsetMinutes(zone, bars[from].t);
+  const endOffset = offsetMinutes(zone, bars[to].t);
+  const constantShift = startOffset === endOffset ? startOffset * 60_000 : null;
+  const shift = (raw: number): number =>
+    constantShift === null ? shiftToZone(raw, zone) : raw + constantShift;
+
+  // Session breaks are a calendar-day notion, so they only mean something intraday.
+  const wantBreaks = tfMs < MS_DAY;
   let lastX = Number.NEGATIVE_INFINITY;
 
   for (let i = from; i <= to; i++) {
-    const t: number = bars[i].t;
     if (i === 0) continue; // no predecessor: cannot prove it is a boundary
-    const prev: number = bars[i - 1].t;
+    const t: number = shift(bars[i].t);
+    const prev: number = shift(bars[i - 1].t);
+
+    if (wantBreaks && utcDayKey(t) !== utcDayKey(prev)) breaks.push(scale.x(asBarIndex(i)));
     if (periodKey(t, unit) === periodKey(prev, unit)) continue;
 
     const monthChanged = utcMonthKey(t) !== utcMonthKey(prev);
@@ -375,5 +411,5 @@ export function timeTicks(
     });
   }
 
-  return out;
+  return { ticks: out, sessionBreaks: breaks };
 }

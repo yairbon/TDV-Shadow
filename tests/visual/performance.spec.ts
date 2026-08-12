@@ -197,10 +197,13 @@ test.describe('frame budget at 100k bars', () => {
     await load(page, `seed=7&bars=${String(BARS)}&live=0&gl=1`);
     const gpu = await panProfile(page, 60);
 
-    expect(cpu.p95).toBeGreaterThan(0);
+    // Means, not p95s. A ratio is only as stable as its denominator, and a single
+    // GC-delayed frame in the BASELINE run inflates the ratio without anything having
+    // regressed. The means here are steady to a few percent across runs.
+    expect(cpu.mean).toBeGreaterThan(0);
     expect(
-      gpu.p95 / cpu.p95,
-      `gl p95 ${String(gpu.p95)}ms vs canvas p95 ${String(cpu.p95)}ms`,
+      gpu.mean / cpu.mean,
+      `gl mean ${String(gpu.mean)}ms vs canvas mean ${String(cpu.mean)}ms`,
     ).toBeLessThan(4);
   });
 
@@ -222,8 +225,8 @@ test.describe('frame budget at 100k bars', () => {
     const loaded = await panProfile(page, 60);
 
     expect(
-      loaded.p95 / bare.p95,
-      `with indicators p95 ${String(loaded.p95)}ms vs bare ${String(bare.p95)}ms`,
+      loaded.mean / bare.mean,
+      `with indicators mean ${String(loaded.mean)}ms vs bare ${String(bare.mean)}ms`,
     ).toBeLessThan(4);
   });
 
@@ -250,11 +253,11 @@ test.describe('frame budget at 100k bars', () => {
     expect(visible).toBeGreaterThan(BARS * 0.9);
 
     const zoomedOut = await panProfile(page, 40);
-    expect(zoomedIn.p95).toBeGreaterThan(0);
+    expect(zoomedIn.mean).toBeGreaterThan(0);
     expect(
-      zoomedOut.p95 / zoomedIn.p95,
-      `zoomed out p95 ${String(zoomedOut.p95)}ms over ${String(visible)} bars vs ` +
-        `${String(zoomedIn.p95)}ms over a screenful`,
+      zoomedOut.mean / zoomedIn.mean,
+      `zoomed out mean ${String(zoomedOut.mean)}ms over ${String(visible)} bars vs ` +
+        `${String(zoomedIn.mean)}ms over a screenful`,
       // Generous on purpose: the claim is that cost tracks COLUMNS rather than bars, and
       // 125x more bars must not mean 125x more work. A tighter bound would be measuring
       // this container's noise floor rather than the renderer.

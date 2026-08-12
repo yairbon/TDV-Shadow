@@ -31,6 +31,7 @@ import {
   type PriceScale,
 } from './scale/priceScale.js';
 import { makeTimeScale, type TimeScale, type VisibleRange } from './scale/timeScale.js';
+import type { TimeZone } from './scale/timezone.js';
 import type { Theme } from './theme.js';
 
 /** Pointer position in CSS px, or null when the pointer is not over the chart. */
@@ -57,6 +58,11 @@ export interface FrameInput {
    * "no gridlines" means a clean plot, not an unreadable one.
    */
   readonly showGrid: boolean;
+  /**
+   * Display timezone for every time LABEL and for where a session break falls (10.2).
+   * The data stays UTC epoch ms; this never touches a bar, an index or a coordinate.
+   */
+  readonly timeZone: TimeZone;
 }
 
 /**
@@ -111,6 +117,8 @@ export interface FrameInputOptions {
   readonly priceScaleInverted?: boolean;
   /** Defaults to true; false hides the grid rules only. */
   readonly showGrid?: boolean;
+  /** IANA zone name for labels. Defaults to 'UTC'. */
+  readonly timeZone?: TimeZone;
   /**
    * Memo for the §4 autoscale. Create one per chart and pass it every frame;
    * omitting it recomputes the range on every frame, which §4 forbids for anything
@@ -158,5 +166,6 @@ export function buildFrameInput(o: FrameInputOptions): FrameInput {
     pointer: o.pointer,
     timeframeMs: TIMEFRAME_MS[o.snapshot.series.tf],
     showGrid: o.showGrid ?? true,
+    timeZone: o.timeZone ?? 'UTC',
   });
 }
