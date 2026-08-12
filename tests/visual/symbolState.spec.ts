@@ -12,7 +12,7 @@
 
 import type { Page } from '@playwright/test';
 import { expect, test } from './harness.js';
-import { clickControl, fillControl } from './controls.js';
+import { clickControl, fillControl, selectControl } from './controls.js';
 
 interface Counts {
   readonly symbol: string;
@@ -314,5 +314,104 @@ test.describe('symbol search', () => {
       nodes.map((n) => n.textContent).join(''),
     );
     expect(marked).toBe('GGL');
+  });
+});
+
+test.describe('compare a second symbol', () => {
+  const overlayInk = (page: Page): Promise<number> =>
+    page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>(
+        '#chart canvas[data-layer="overlay"]',
+      );
+      const ctx = canvas?.getContext('2d') ?? null;
+      if (canvas === null || ctx === null) return -1;
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let offset = 3; offset < data.length; offset += 4) if (data[offset] > 40) count++;
+      return count;
+    });
+
+  const compared = (page: Page): Promise<string | null> =>
+    page.evaluate(() => {
+      const chart = (window as { __chart?: { compareSymbol: () => string | null } }).__chart;
+      return chart?.compareSymbol() ?? null;
+    });
+
+  test('draws a second instrument over the price plot', async ({ page }) => {
+    await open(page);
+    await pick(page, 'AAPL');
+    const before = await overlayInk(page);
+
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(700);
+
+    expect(await compared(page)).toBe('SPY');
+    expect(await overlayInk(page)).toBeGreaterThan(before + 500);
+  });
+
+  test('clears when set back to none', async ({ page }) => {
+    await open(page);
+    await pick(page, 'AAPL');
+    const bare = await overlayInk(page);
+
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(700);
+    // Prove the measurement can move at all, or "back to bare" is satisfied by a
+    // comparison that never drew anything.
+    expect(await overlayInk(page)).toBeGreaterThan(bare + 500);
+
+    await selectControl(page, '#compare-pick', '');
+    await page.waitForTimeout(700);
+    expect(await compared(page)).toBeNull();
+    expect(await overlayInk(page)).toBe(bare);
+  });
+
+  test('follows the chart across a symbol change, like an indicator', async ({ page }) => {
+    // The comparison describes the view you set up, not the instrument — so it belongs to
+    // the chart, the same way indicators do, and must survive the rebuild.
+    await open(page);
+    // What NVDA's overlay looks like with no comparison, for comparison.
+    await pick(page, 'NVDA');
+    const bareNvda = await overlayInk(page);
+
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(700);
+
+    await pick(page, 'NVDA');
+    expect(await compared(page)).toBe('SPY');
+    // …and it actually re-drew against NVDA's bars rather than merely being remembered.
+    expect(await overlayInk(page)).toBeGreaterThan(bareNvda + 500);
+  });
+
+  test('comparing a symbol with itself draws nothing', async ({ page }) => {
+    // A self-comparison is flat by construction and only clutters the plot.
+    await open(page);
+    await pick(page, 'AAPL');
+    const bare = await overlayInk(page);
+    await selectControl(page, '#compare-pick', 'AAPL');
+    await page.waitForTimeout(700);
+    expect(await compared(page)).toBeNull();
+    expect(await overlayInk(page)).toBe(bare);
+
+    // A different symbol does draw, so the assertion above is about the self-comparison
+    // rather than about comparisons never drawing.
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(700);
+    expect(await overlayInk(page)).toBeGreaterThan(bare + 500);
+  });
+
+  test('survives a chart-type switch without erroring', async ({ page }) => {
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(500);
+    const beforeSwitch = await overlayInk(page);
+    expect(beforeSwitch).toBeGreaterThan(0);
+    await page.selectOption('#chart-type', 'renko');
+    await page.waitForTimeout(700);
+    // Renko has its own index space, so the comparison is realigned onto it; what must
+    // not happen is the overlay going blank or the frame throwing.
+    expect(await overlayInk(page)).toBeGreaterThan(0);
   });
 });

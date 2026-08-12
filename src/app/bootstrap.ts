@@ -57,6 +57,8 @@ import type { Anchor, DrawingKind, MagnetMode } from '../drawings/types.js';
 import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
 import { timeOf, type ChartType, type ChartTypeParams, type DerivedSeries } from '../charts/types.js';
 import { indexAtTime, remapIndex } from '../charts/remap.js';
+import { alignByTime, rebase, type ComparisonSeries } from '../charts/compare.js';
+import { drawCompareSeries } from '../renderer/layers/compareLayer.js';
 import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
 import {
   createFeatureState,
@@ -259,6 +261,15 @@ export interface Chart {
    * of a trendline changed not a single pixel.
    */
   setPlacement(placement: Placement | null): void;
+  /**
+   * Overlays a second instrument's relative performance, or clears it.
+   *
+   * The chart does not fetch: the caller owns loading, so this takes bars. Both series
+   * are re-based to 0% at the left edge of the view and drawn against the SAME axis, via
+   * the primary's own price scale — see `compareY` for why that is the honest choice.
+   */
+  setCompare(compare: { readonly symbol: string; readonly bars: readonly Bar[] } | null): void;
+  compareSymbol(): string | null;
   setMeasure(measure: { readonly from: Anchor; readonly to: Anchor } | null): void;
   measure(): { readonly from: Anchor; readonly to: Anchor } | null;
   priceZoom(): number;
@@ -370,6 +381,20 @@ export function createChart(o: ChartOptions): Chart {
   let priceInverted = false;
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
   let placement: Placement | null = null;
+  let compare: { readonly symbol: string; readonly bars: readonly Bar[] } | null = null;
+  /**
+   * Memo for the aligned comparison.
+   *
+   * `alignByTime` is O(n + m) but that is still 200k operations at full history, and it
+   * only changes when the data or the compared instrument does — never merely because the
+   * user panned. The rebase is keyed separately because it DOES change with the view.
+   */
+  let compareCache: {
+    key: string;
+    baseIndex: number;
+    aligned: ComparisonSeries;
+    based: ComparisonSeries;
+  } | null = null;
   let externalPointerTime: number | null = null;
   let replayIndex: number | null = null;
   /** Memo for the truncated snapshot; slicing 100k bars every frame is not free. */
@@ -514,6 +539,58 @@ export function createChart(o: ChartOptions): Chart {
    * cleared it. Pane indicators take over the volume pane rect: one pane at a time keeps
    * the layout honest without inventing a pane-stacking system the layout does not have.
    */
+  /**
+   * Draws the comparison overlay, if one is set.
+   *
+   * Both instruments are re-based to 0% at the LEFT EDGE of the visible window, and the
+   * comparison's percent is projected back through the primary's own price scale — the
+   * price the primary would be at, had it moved by that percent from the same base. That
+   * is what makes one axis honest for two instruments: AAPL near 300 and SPY near 770 on
+   * one linear price scale would flatten whichever has the smaller range into a straight
+   * line. Going through the existing scale rather than inventing a second one also means
+   * log mode and axis inversion apply to the comparison for free.
+   */
+  const drawComparison = (
+    ctx: CanvasRenderingContext2D,
+    input: FrameInput,
+    overlayInput: { x(index: number): number; readonly x0: number; readonly dx: number },
+  ): void => {
+    const active = compare;
+    if (active === null) return;
+    const bars = input.snapshot.series.bars;
+    if (bars.length === 0) return;
+
+    // The base is the visible window's left edge, so the reading is "since what you can
+    // see" — which is what a comparison is for, and why the key includes it: a pan that
+    // moves the left edge genuinely changes the answer, while a pan that does not must
+    // not rebuild a 100k array.
+    const baseIndex = input.visible.from;
+    const key = `${String(dataRevision())}:${active.symbol}:${String(active.bars.length)}`;
+    const cached = compareCache;
+    const hit = cached !== null && cached.key === key ? cached : null;
+    const aligned = hit === null ? alignByTime(bars, active.bars) : hit.aligned;
+    const based = hit !== null && hit.baseIndex === baseIndex ? hit.based : rebase(aligned, baseIndex);
+    compareCache = { key, baseIndex, aligned, based };
+    if (based.from < 0) return;
+
+    const basePrice = bars[Math.min(bars.length - 1, Math.max(0, baseIndex))].c;
+    if (!(basePrice > 0)) return;
+
+    drawCompareSeries(ctx, {
+      percent: based.percent,
+      plot: input.layout.plot,
+      from: input.visible.from,
+      to: input.visible.to,
+      y: (percent) => input.priceScale.y(asPrice(basePrice * (1 + percent / 100))),
+      x: (i) => overlayInput.x(i),
+      x0: overlayInput.x0,
+      dx: overlayInput.dx,
+      color: theme.downBody,
+      label: active.symbol,
+      theme,
+    });
+  };
+
   const drawAnnotations = (input: FrameInput, mask: DirtyMask): void => {
     if ((mask & DirtyFlags.Overlay) === 0) return;
     const ctx = surfaces.overlay.ctx;
@@ -546,6 +623,8 @@ export function createChart(o: ChartOptions): Chart {
       }
       drawIndicatorOverlay(ctx, result, overlayInput, priceScale, indicator.styles);
     }
+
+    drawComparison(ctx, input, overlayInput);
 
     // One rect per pane indicator, stacked under the volume pane. Panes beyond what the
     // layout could fit are simply not drawn rather than overlapping each other.
@@ -1207,6 +1286,12 @@ export function createChart(o: ChartOptions): Chart {
         price: input.priceScale.price(asPixel(snapped.y)),
       };
     },
+    setCompare(next) {
+      compare = next;
+      compareCache = null;
+      scheduler.invalidate(DirtyFlags.Overlay);
+    },
+    compareSymbol: () => compare?.symbol ?? null,
     setPlacement(next) {
       placement = next;
       scheduler.invalidate(DirtyFlags.Crosshair);

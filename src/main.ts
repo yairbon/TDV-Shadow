@@ -347,6 +347,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   const saved = drawingsBySymbol.get(symbol);
   if (saved !== undefined) chart.drawings.loadJSON(saved);
   for (const spec of indicatorSpecs) chart.addIndicator(spec.id, spec.params, spec.styles);
+  applyCompare(chart);
   // Fit the series to the pane on load. A fixed default spacing leaves 100 daily bars
   // hugging the right edge of a wide screen with dead space beside them, which is the
   // first thing that reads as unfinished.
@@ -871,6 +872,44 @@ if (symbolSelect !== null) {
   }
   symbolSelect.addEventListener('change', () => {
     switchSymbol(symbolSelect.value);
+  });
+}
+
+/**
+ * Compare overlay: a second instrument's relative performance on the same plot.
+ *
+ * Per CHART, not per symbol — it is a property of the view you have set up, the same way
+ * an indicator is. Switching the primary keeps the comparison and re-aligns it against
+ * the new bars, which is what `build()` does by re-applying it after the rebuild.
+ */
+let compareSymbol: string | null = null;
+
+function applyCompare(target: Chart): void {
+  if (compareSymbol === null || compareSymbol === symbol) {
+    target.setCompare(null);
+    return;
+  }
+  const loadedCompare = loadSymbol(compareSymbol);
+  target.setCompare({ symbol: compareSymbol, bars: loadedCompare.bars });
+}
+
+const comparePick = sel('#compare-pick');
+if (comparePick !== null) {
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = 'Compare…';
+  comparePick.append(none);
+  for (const definition of SYMBOLS) {
+    const option = document.createElement('option');
+    option.value = definition.symbol;
+    option.textContent = definition.symbol;
+    comparePick.append(option);
+  }
+  comparePick.addEventListener('change', () => {
+    compareSymbol = comparePick.value === '' ? null : comparePick.value;
+    const target = currentChart();
+    if (target !== null) applyCompare(target);
+    status();
   });
 }
 

@@ -184,8 +184,18 @@ Three more from the same pass, each of which only shows up on screen:
   the "fetch from the network" row carries that query verbatim — so a query containing
   markup was written straight into the page.
 
-Still open in Tier 2: the object tree, compare/overlay a second symbol, multiple price
-scales with resizable panes, and named layouts.
+- **Compare a second symbol.** The largest gap in the plan. Alignment is by TIME, not by
+  index: zipping the two bar arrays is the obvious implementation and it is wrong in a way
+  that looks right — one extra holiday in the secondary shifts every later value by a bar,
+  and the overlay reads as a plausible curve that is a day out and drifting. Forward-fill
+  where the secondary did not trade, NaN before its first bar and after its last, so the
+  line breaks rather than painting a flat quote across years the instrument did not exist.
+  Both series are re-based to 0% at the left edge of the view and the comparison is
+  projected back through the PRIMARY's price scale, so log mode and axis inversion apply to
+  it for free rather than needing a second scale that could drift out of agreement.
+
+Still open in Tier 2: the object tree, multiple price scales with resizable panes, and
+named layouts.
 
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
