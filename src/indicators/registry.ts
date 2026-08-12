@@ -8,6 +8,7 @@ import { cciIndicator } from './cci.js';
 import { donchianIndicator } from './donchian.js';
 import { keltnerIndicator } from './keltner.js';
 import { obvIndicator } from './obv.js';
+import { psarIndicator } from './psar.js';
 import { smaIndicator } from './sma.js';
 import { supertrendIndicator } from './supertrend.js';
 import { volumeIndicator, volumeProfileIndicator } from './volume.js';
@@ -33,6 +34,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   keltner: keltnerIndicator,
   adx: adxIndicator,
   supertrend: supertrendIndicator,
+  psar: psarIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {

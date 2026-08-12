@@ -31,12 +31,20 @@ export type IndicatorId =
   | 'donchian'
   | 'keltner'
   | 'adx'
-  | 'supertrend';
+  | 'supertrend'
+  | 'psar';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
 
-export type PlotStyle = 'line' | 'histogram' | 'band' | 'fill' | 'horizontal-profile';
+export type PlotStyle =
+  | 'line'
+  | 'histogram'
+  | 'band'
+  | 'fill'
+  | 'horizontal-profile'
+  /** Discrete markers, one per bar, with no line between them (Parabolic SAR). */
+  | 'dots';
 
 export interface PlotSpec {
   readonly key: string;
@@ -87,6 +95,9 @@ export interface IndicatorParams {
   readonly atrPeriod?: number;
   /** Keltner / Supertrend: how many ATRs the band or stop sits away from the basis. */
   readonly multiplier?: number;
+  /** Parabolic SAR: acceleration increment and its cap. */
+  readonly step?: number;
+  readonly maxStep?: number;
   readonly source?: 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4';
   /** Volume Profile: number of price buckets and the value-area share (default 70). */
   readonly buckets?: number;
