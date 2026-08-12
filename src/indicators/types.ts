@@ -28,7 +28,8 @@ export type IndicatorId =
   | 'obv'
   | 'cci'
   | 'williams-r'
-  | 'donchian';
+  | 'donchian'
+  | 'keltner';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
@@ -80,6 +81,10 @@ export interface IndicatorParams {
   readonly slowPeriod?: number;
   readonly signalPeriod?: number;
   readonly stdDev?: number;
+  /** Keltner / Supertrend: the ATR length, kept separate from the basis `period`. */
+  readonly atrPeriod?: number;
+  /** Keltner / Supertrend: how many ATRs the band or stop sits away from the basis. */
+  readonly multiplier?: number;
   readonly source?: 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4';
   /** Volume Profile: number of price buckets and the value-area share (default 70). */
   readonly buckets?: number;

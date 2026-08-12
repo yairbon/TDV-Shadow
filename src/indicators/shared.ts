@@ -243,6 +243,36 @@ export function extractField(bars: readonly Bar[], field: 'o' | 'h' | 'l' | 'c')
   return out;
 }
 
+/**
+ * True range per bar: `max(h − l, |h − prevClose|, |l − prevClose|)`.
+ *
+ * Index 0 has no previous close and is left at 0 — it is never read, because every
+ * consumer smooths from `offset = 1`. Returning 0 rather than NaN keeps the buffer usable
+ * as a plain numeric source for the Wilder kernels.
+ */
+export function trueRange(bars: readonly Bar[]): Float64Array {
+  const out = new Float64Array(bars.length);
+  for (let i = 1; i < bars.length; i += 1) {
+    const previousClose = bars[i - 1].c;
+    out[i] = Math.max(
+      bars[i].h - bars[i].l,
+      Math.abs(bars[i].h - previousClose),
+      Math.abs(bars[i].l - previousClose),
+    );
+  }
+  return out;
+}
+
+/**
+ * Average True Range, Wilder-smoothed from the first real true range (index 1), so the
+ * first value lands at index `period`. Shared by Keltner, Supertrend and ADX so all three
+ * agree with the standalone ATR indicator to the last decimal.
+ */
+export function atrInto(bars: readonly Bar[], period: number, out: Float64Array): void {
+  if (bars.length < 2) return;
+  wilderInto(trueRange(bars), period, out, 1);
+}
+
 /** Number of leading NaNs — the formed-from index of a plot. */
 export function leadingNaNCount(values: Float64Array): number {
   let count = 0;

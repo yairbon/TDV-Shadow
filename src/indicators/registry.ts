@@ -5,6 +5,7 @@ import { atrIndicator, bollingerIndicator, macdIndicator, rsiIndicator, stochast
 import { emaIndicator, vwapIndicator, wmaIndicator } from './movingAverages.js';
 import { cciIndicator } from './cci.js';
 import { donchianIndicator } from './donchian.js';
+import { keltnerIndicator } from './keltner.js';
 import { obvIndicator } from './obv.js';
 import { smaIndicator } from './sma.js';
 import { volumeIndicator, volumeProfileIndicator } from './volume.js';
@@ -27,6 +28,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   cci: cciIndicator,
   'williams-r': williamsRIndicator,
   donchian: donchianIndicator,
+  keltner: keltnerIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {
