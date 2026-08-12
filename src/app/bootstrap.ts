@@ -155,6 +155,14 @@ export interface CandleGeometryDump {
 export interface GeometryDump {
   readonly dpr: number;
   readonly plot: Rect;
+  /**
+   * The volume pane, or null when the layout has no room for one.
+   *
+   * Exposed because it is the only band of the series layer that no `candles` entry
+   * describes, so without it a test cannot tell "the volume pane is empty" from "the
+   * volume pane is somewhere else".
+   */
+  readonly volume: Rect | null;
   readonly backingStore: Readonly<Record<LayerName, { width: number; height: number }>>;
   readonly cssSize: { width: number; height: number };
   readonly visible: { from: number; to: number; count: number };
@@ -702,6 +710,34 @@ export function createChart(o: ChartOptions): Chart {
     return derived.bars.map((brick) => timeOf(brick, source));
   };
 
+  /**
+   * Carries the VISIBLE TIME WINDOW across an index-space change.
+   *
+   * The view is `(scrollPosition, barSpacing)` in bars, and a resampling type has far
+   * fewer of them: 900 minutes become ~50 bricks. Leaving the view alone left the whole
+   * series crammed into the far left of an otherwise empty plot, drawn at a spacing meant
+   * for 900 bars — which is what a chart type "not working" looks like.
+   *
+   * Both edges of the window are converted, then the spacing is whatever makes that many
+   * bars fill the plot. The user keeps looking at the same stretch of time.
+   */
+  const remapView = (from: readonly number[], to: readonly number[]): void => {
+    if (from.length < 2 || to.length < 2) return;
+    const input = lastInput;
+    if (input === null) return;
+
+    const width = input.layout.plot.width;
+    if (width <= 0) return;
+    const left = remapIndex(from, to, input.visible.from);
+    const right = remapIndex(from, to, input.visible.to);
+    const span = Math.max(1, right - left);
+
+    view.update({
+      barSpacing: Math.min(120, Math.max(MIN_BAR_SPACING, width / span)),
+      scrollPosition: right + rightMargin,
+    });
+  };
+
   /** Moves every index-anchored annotation from one index space to another. */
   const remapAnnotations = (from: readonly number[], to: readonly number[]): void => {
     if (from.length < 2 || to.length < 2) return;
@@ -810,6 +846,8 @@ export function createChart(o: ChartOptions): Chart {
       drawDerivedSeries(customTarget, {
         series: derived,
         plot: input.layout.plot,
+        viewport: input.layout.viewport,
+        volume: input.layout.volume,
         theme,
         x: (i) => input.timeScale.x(asBarIndex(i)),
         y: (price) => input.priceScale.y(asPrice(price)),
@@ -905,6 +943,7 @@ export function createChart(o: ChartOptions): Chart {
     return {
       dpr: surfaces.grid.ratio,
       plot: input.layout.plot,
+      volume: input.layout.volume,
       backingStore: backing,
       cssSize: { width: surfaces.grid.cssWidth, height: surfaces.grid.cssHeight },
       visible: { from: visible.from, to: visible.to, count: visible.count },
@@ -943,6 +982,7 @@ export function createChart(o: ChartOptions): Chart {
       features.chartParams = params ?? {};
       const after = indexTimes(type, features.chartParams);
       remapAnnotations(before, after);
+      remapView(before, after);
       scheduler.invalidate(DirtyFlags.All);
     },
     addIndicator(id, params = {}, styles = {}) {

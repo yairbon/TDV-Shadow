@@ -129,6 +129,29 @@ from a test that exercised one at a time. It found three more:
   restore died silently. `tests/visual/harness.ts` now fails a test on any uncaught page
   error, and was itself verified by injecting a throw.
 
+## Found by looking at the built app
+
+Two more, both in the seam between the built-in layers and the derived one:
+
+- **The volume pane was empty for every non-candle chart type.** The built-in candle layer
+  owns that pane and is skipped entirely for a custom type, so nine of the fourteen charts
+  showed a blank band. The derived layer draws it now, over its own bars.
+- **The derived layer never cleared the volume pane** (mandate #2). It cleared
+  `plot.left + plot.width` by `plot.top + plot.height`, which stops exactly at the top of
+  that pane, so the candle columns from before the switch stayed painted underneath —
+  which is also why the empty pane above had gone unnoticed.
+- **A chart-type switch remapped the drawings but not the view.** A chart fitted to 900
+  source bars kept that bar spacing and scroll position over a 53-brick Renko series, so
+  the bricks ended up crammed into the far left of an otherwise empty plot. The visible
+  window is remapped through time now, the same way the anchors already were.
+
+The test for the first two is one assertion with two halves, because each bug hid the
+other: `ink > 0` passes on a chart that draws nothing while stale columns remain, and
+"no ink outside a bar" passes on an empty pane. It also has to zoom in first — at the
+default fit an index-preserving type sits under 2px per bar, the bodies tile the plot end
+to end, and there is nowhere for stray ink to be detected. Both halves were verified by
+reverting each fix separately.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

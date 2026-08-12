@@ -58,6 +58,76 @@ const seriesInk = (page: Page): Promise<number> =>
     return count;
   });
 
+interface VolumeInk {
+  /** Painted device pixels inside the volume pane of the series layer. */
+  readonly ink: number;
+  /** CSS columns of that ink belonging to no bar the last frame rendered. */
+  readonly stray: number;
+  /**
+   * CSS columns inside the plot that belong to no bar at all — the gaps between bodies.
+   *
+   * `stray` can only ever be non-zero if there are some, and at the default fit there are
+   * none: an index-preserving type sits at under 2px per bar, so the bodies tile the plot
+   * end to end and every column is "explained" by something. Asserting this is what stops
+   * `stray === 0` from being a tautology.
+   */
+  readonly gaps: number;
+}
+
+/**
+ * Both halves have to be asserted together, and that is not fussiness.
+ *
+ * `ink > 0` alone passes on a chart that draws no volume at all, because the candle
+ * volume from before the type switch is still sitting there — the exact bug. `stray === 0`
+ * alone passes on an empty pane. Only the conjunction says "this chart type painted its
+ * own volume, and nothing else's".
+ */
+const volumeInk = (page: Page): Promise<VolumeInk> =>
+  page.evaluate(() => {
+    const g =
+      (window as {
+        __chartGeometry?: () => {
+          plot: { left: number; width: number };
+          volume: { top: number; height: number } | null;
+          candles: { centreX: number; width: number }[];
+        } | null;
+      }).__chartGeometry?.() ?? null;
+    const canvas = document.querySelector<HTMLCanvasElement>('#chart canvas[data-layer="series"]');
+    const ctx = canvas?.getContext('2d') ?? null;
+    if (g === null || g.volume === null || canvas === null || ctx === null) {
+      return { ink: 0, stray: -1, gaps: 0 };
+    }
+
+    const dpr = canvas.width / canvas.getBoundingClientRect().width;
+    const data = ctx.getImageData(
+      0,
+      Math.round(g.volume.top * dpr),
+      canvas.width,
+      Math.max(1, Math.round(g.volume.height * dpr)),
+    ).data;
+
+    let ink = 0;
+    const columns = new Set<number>();
+    const rowBytes = canvas.width * 4;
+    for (let offset = 3; offset < data.length; offset += 4) {
+      if (data[offset] <= 128) continue;
+      ink++;
+      columns.add(Math.round(((offset - 3) % rowBytes) / 4 / dpr));
+    }
+
+    const half = (g.candles[0]?.width ?? 1) / 2 + 1;
+    const covered = (x: number): boolean => g.candles.some((c) => Math.abs(c.centreX - x) <= half);
+
+    let stray = 0;
+    for (const x of columns) if (!covered(x)) stray++;
+
+    let gaps = 0;
+    for (let x = Math.ceil(g.plot.left); x < g.plot.left + g.plot.width; x++) {
+      if (!covered(x)) gaps++;
+    }
+    return { ink, stray, gaps };
+  });
+
 test.describe('resampling chart types', () => {
   test('all fourteen types are offered', async ({ page }) => {
     await open(page);
@@ -320,6 +390,72 @@ test.describe('resampling chart types', () => {
     // hundreds of bars, which is what an unmapped switch produced.
     expect(Math.abs(back[0] - 200)).toBeLessThan(30);
     expect(Math.abs(back[1] - 400)).toBeLessThan(30);
+  });
+
+  for (const type of [...RESAMPLING, 'heikin-ashi', 'line', 'area'] as const) {
+    test(`${type} paints its own volume pane and nobody else's`, async ({ page }) => {
+      // Two bugs meet in this pane, and each one hides the other.
+      //
+      // The built-in candle layer owns the volume pane and is SKIPPED for a custom chart
+      // type, so every non-candle chart drew nothing there. Derived bars carry volume
+      // (summed from the source bars they span), so the derived layer draws it now — §9,
+      // over its own index space.
+      //
+      // That was invisible because the derived layer also broke mandate #2: it cleared
+      // only `plot.left + plot.width` by `plot.top + plot.height`, which stops exactly at
+      // the TOP of the volume pane. The candle columns from before the switch survived
+      // there forever, so the band looked populated while the chart above it had changed
+      // to a series with a tenth as many bars.
+      await open(page);
+      await setType(page, type);
+      // Zoom in before measuring. At the default fit an index-preserving type sits at
+      // ~1.7 CSS px per bar, so the bars tile every column of the plot and `stray` is
+      // structurally incapable of being non-zero — it would pass on a pane full of
+      // somebody else's ink. Wide bars leave gaps that stale columns fall into.
+      await page.evaluate(() => {
+        (window as { __tdv?: { setBarSpacing: (s: number) => void } }).__tdv?.setBarSpacing(20);
+      });
+      await page.waitForTimeout(300);
+      const volume = await volumeInk(page);
+      expect(volume.gaps).toBeGreaterThan(100);
+      expect(volume.ink).toBeGreaterThan(200);
+      expect(volume.stray).toBe(0);
+    });
+  }
+
+  test('switching to a derived type refits the view to its index space', async ({ page }) => {
+    // `setChartType` remapped the DRAWINGS through time but not the VIEW, so a chart
+    // fitted to 800 source bars kept that bar spacing and that scroll position over a
+    // ~100-brick Renko series: the bricks ended up crammed into the far left of an
+    // otherwise empty plot. The view is remapped through time now, same as the anchors.
+    await open(page);
+    await setType(page, 'renko');
+
+    const spread = await page.evaluate(() => {
+      const g =
+        (window as {
+          __chartGeometry?: () => {
+            plot: { left: number; width: number };
+            candles: { centreX: number }[];
+            barCount: number;
+            visible: { from: number; to: number; count: number };
+          } | null;
+        }).__chartGeometry?.() ?? null;
+      if (g === null || g.candles.length === 0) return null;
+      const xs = g.candles.map((c) => c.centreX);
+      return {
+        covered: (Math.max(...xs) - Math.min(...xs)) / g.plot.width,
+        visible: g.visible.count,
+        barCount: g.barCount,
+      };
+    });
+
+    expect(spread).not.toBeNull();
+    // The bricks span most of the plot rather than huddling at one edge.
+    expect(spread?.covered ?? 0).toBeGreaterThan(0.6);
+    // And the visible window is a real slice of the brick series, not of the source.
+    expect(spread?.visible ?? 0).toBeGreaterThan(1);
+    expect(spread?.visible ?? 0).toBeLessThanOrEqual((spread?.barCount ?? 0) + 1);
   });
 
   test('a custom chart type paints in WebGL mode too', async ({ page }) => {

@@ -19,6 +19,15 @@ import type { Theme } from '../theme.js';
 export interface DerivedDrawInput {
   readonly series: DerivedSeries;
   readonly plot: Rect;
+  /**
+   * The whole layer, for the clear.
+   *
+   * Mandate #2 is "every frame clears its LAYER" — this used to clear only the price
+   * plot, which stops exactly at the top of the volume pane. Switching from candles to a
+   * derived type left the candle volume columns painted underneath forever, because the
+   * built-in series layer (which owns that pane) is skipped for custom types.
+   */
+  readonly viewport: Rect;
   readonly theme: Theme;
   /** Bar centre in CSS px for an index into `series.bars`. */
   x(index: number): number;
@@ -27,6 +36,15 @@ export interface DerivedDrawInput {
   readonly barSpacing: number;
   readonly from: number;
   readonly to: number;
+  /**
+   * Volume pane rect, or null when the layout has none.
+   *
+   * The built-in candle layer owns this pane, and it is skipped entirely for a custom
+   * chart type — so every non-candle chart left an empty band below the plot. A derived
+   * bar carries volume (summed from the source bars it spans, for resampling types), so
+   * there is nothing stopping this layer from drawing it.
+   */
+  readonly volume: Rect | null;
 }
 
 function clipToPlot(ctx: CanvasRenderingContext2D, plot: Rect): void {
@@ -38,7 +56,7 @@ function clipToPlot(ctx: CanvasRenderingContext2D, plot: Rect): void {
 
 export function drawDerivedSeries(ctx: CanvasRenderingContext2D, input: DerivedDrawInput): void {
   const { series, plot, theme } = input;
-  ctx.clearRect(0, 0, plot.left + plot.width + 1, plot.top + plot.height + 1);
+  ctx.clearRect(0, 0, input.viewport.width, input.viewport.height);
   if (series.bars.length === 0) return;
 
   const from = Math.max(0, input.from);
@@ -72,7 +90,46 @@ export function drawDerivedSeries(ctx: CanvasRenderingContext2D, input: DerivedD
   }
 
   ctx.restore();
+  drawVolumePane(ctx, input, from, to);
   void theme;
+}
+
+/** §9, over the DERIVED bars: same transform, same snapped columns as the candle layer. */
+function drawVolumePane(
+  ctx: CanvasRenderingContext2D,
+  input: DerivedDrawInput,
+  from: number,
+  to: number,
+): void {
+  const pane = input.volume;
+  if (pane === null) return;
+
+  let peak = 0;
+  for (let i = from; i <= to; i++) {
+    const v = input.series.bars[i].v;
+    if (v > peak) peak = v;
+  }
+  if (peak <= 0) return;
+
+  const bottom = snapFill(pane.top + pane.height);
+  const geometry = candleGeometry(input.barSpacing);
+  const width = Math.max(1, geometry.width);
+  const half = geometry.half;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pane.left, pane.top, pane.width, pane.height);
+  ctx.clip();
+  for (const rising of [true, false]) {
+    ctx.fillStyle = rising ? input.theme.upVolume : input.theme.downVolume;
+    for (let i = from; i <= to; i++) {
+      const bar = input.series.bars[i];
+      if (bar.rising !== rising) continue;
+      const top = snapFill(pane.top + pane.height - (bar.v / peak) * pane.height);
+      ctx.fillRect(snapFill(input.x(i)) - half, top, width, Math.max(1, bottom - top));
+    }
+  }
+  ctx.restore();
 }
 
 function drawBodies(
