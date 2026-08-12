@@ -335,13 +335,13 @@ export function resizePane(
 
   // The two neighbours share this many pixels, whatever the divider does.
   const shared = rectBottom(lower) - upper.top - gap;
-  const cap = Math.max(0, shared);
   // Floor of the lower pane, raised when the upper pane would breach its own ceiling.
-  const lowerFloor = Math.min(
-    index === 0 ? PANE_MIN_HEIGHT : Math.max(PANE_MIN_HEIGHT, shared - ceiling),
-    cap,
+  const lowerFloor = index === 0 ? PANE_MIN_HEIGHT : Math.max(PANE_MIN_HEIGHT, shared - ceiling);
+  // …but never more than the pair actually has, so the upper pane cannot go negative.
+  const lowerCeiling = Math.min(
+    Math.max(Math.min(ceiling, shared - upperFloor), lowerFloor),
+    Math.max(0, shared),
   );
-  const lowerCeiling = Math.min(Math.max(Math.min(ceiling, shared - upperFloor), lowerFloor), cap);
   const lowerH = Math.min(
     Math.max(Math.round(rectBottom(lower) - (y + gap / 2)), lowerFloor),
     lowerCeiling,

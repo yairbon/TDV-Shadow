@@ -461,6 +461,29 @@ describe('layout — resizePane', () => {
     );
   });
 
+  it('cannot invert a pair that is already thinner than the pane floor', () => {
+    // A legacy stack of 10px panes (only possible with a permissive minPlotHeight) is
+    // below PANE_MIN_HEIGHT already: the drag must still not hand out more pixels than
+    // the pair owns.
+    const cramped: LayoutOptions = {
+      ...base,
+      height: 84,
+      paneGap: 0,
+      volumePaneFraction: 0,
+      minPlotHeight: 0,
+      extraPanes: 2,
+    };
+    const start = computeLayout(cramped);
+    expect([start.plot.height, ...heightsOf(start)]).toEqual([40, 10, 10]);
+    for (const y of [-100, 40, 45, 60, 500]) {
+      const fractions = resizePane(start, cramped, 1, y);
+      for (const f of fractions) expect(f).toBeGreaterThanOrEqual(0);
+      // The pair owns 20px; neither pane may be handed more than that.
+      expect(fractions[0] + fractions[1]).toBeCloseTo(20 / 60, 10);
+      expectTilesContent(computeLayout({ ...cramped, paneFractions: fractions }), 0);
+    }
+  });
+
   it('returns finite fractions for a collapsed content box', () => {
     // A window collapsed to nothing mid-drag: the divide-by-zero must not leak out.
     const empty = computeLayout({ ...base, width: 20, height: 10 });
