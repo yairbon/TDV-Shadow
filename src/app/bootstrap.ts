@@ -44,10 +44,16 @@ import {
   drawWatermark,
   type PlotStyles,
 } from '../renderer/layers/annotationsLayer.js';
-import { buildGeometry, type DrawingGeometry } from '../drawings/geometry.js';
+import {
+  buildGeometry,
+  buildPreviewGeometry,
+  constrainToAngle,
+  type DrawingGeometry,
+} from '../drawings/geometry.js';
+import { drawPlacementPreview } from '../renderer/layers/previewLayer.js';
 import { hitTest, type Hit } from '../drawings/hitTest.js';
 import { snapPixel, type SnapResult } from '../drawings/magnet.js';
-import type { Anchor, MagnetMode } from '../drawings/types.js';
+import type { Anchor, DrawingKind, MagnetMode } from '../drawings/types.js';
 import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
 import { timeOf, type ChartType, type ChartTypeParams, type DerivedSeries } from '../charts/types.js';
 import { indexAtTime, remapIndex } from '../charts/remap.js';
@@ -178,6 +184,15 @@ export interface GeometryDump {
   readonly frameCount: number;
 }
 
+/** A drawing mid-placement: what is pinned, and where the cursor is. */
+export interface Placement {
+  readonly kind: DrawingKind;
+  /** Anchors already clicked. Empty means the tool is armed but nothing is pinned. */
+  readonly placed: readonly Anchor[];
+  /** Where the cursor is now, in DATA space — the anchor rule holds for the preview too. */
+  readonly cursor: Anchor;
+}
+
 export interface Chart {
   readonly series: SeriesStore;
   readonly drawings: DrawingStore;
@@ -235,6 +250,15 @@ export interface Chart {
    * The measurement ruler (9.1). Anchors are in DATA space like every drawing, so a
    * measurement taken then zoomed still spans the same bars and the same prices.
    */
+  /**
+   * The drawing being placed right now, or null when nothing is being placed.
+   *
+   * Anchors already clicked plus wherever the cursor is. The chart owns this so the
+   * renderer can paint it: before, the in-progress anchors lived only in the app shell
+   * and nothing on the canvas knew a drawing was underway, so clicking the first point
+   * of a trendline changed not a single pixel.
+   */
+  setPlacement(placement: Placement | null): void;
   setMeasure(measure: { readonly from: Anchor; readonly to: Anchor } | null): void;
   measure(): { readonly from: Anchor; readonly to: Anchor } | null;
   priceZoom(): number;
@@ -246,6 +270,15 @@ export interface Chart {
   fitAll(): void;
   /** CSS pixel (relative to the container) -> data-space anchor, with optional magnet. */
   pickAnchor(x: number, y: number, magnet?: MagnetMode): SnapResult;
+  /**
+   * `to`, rotated to the nearest 45° about `from` — TradingView's Shift behaviour.
+   *
+   * Lives on the chart because the snap is a PIXEL property: the same two anchors
+   * subtend a different visual angle at every zoom and on a log scale, so constraining
+   * in data space would drift off 45° as soon as the user zoomed. The projectors are
+   * here, so the conversion happens here.
+   */
+  constrainAnchor(from: Anchor, to: Anchor): Anchor;
   /** Data-space anchor -> CSS pixel, through the live scales. */
   projectAnchor(anchor: Anchor): { readonly x: number; readonly y: number };
   readonly layout: () => Layout;
@@ -336,6 +369,7 @@ export function createChart(o: ChartOptions): Chart {
   let priceZoom = 1;
   let priceInverted = false;
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
+  let placement: Placement | null = null;
   let externalPointerTime: number | null = null;
   let replayIndex: number | null = null;
   /** Memo for the truncated snapshot; slicing 100k bars every frame is not free. */
@@ -599,6 +633,31 @@ export function createChart(o: ChartOptions): Chart {
    * back to `bars * timeframeMs` only past the end of the series — where the ruler is
    * measuring into empty space and there is no bar to read a time from.
    */
+  /**
+   * Paints the drawing being placed, on the CROSSHAIR layer.
+   *
+   * That layer, not the overlay: mandate #2 says every frame clears its layer, and the
+   * crosshair already clears and repaints on every pointer move — which is exactly the
+   * cadence a shape that follows the cursor needs. The overlay only repaints when the
+   * data or the committed annotations change, so a rubber band drawn there would smear.
+   */
+  const drawPlacementOverlay = (input: FrameInput): void => {
+    const active = placement;
+    if (active === null) return;
+    const geometry = buildPreviewGeometry(
+      active.kind,
+      active.placed,
+      active.cursor,
+      { y: (p) => input.priceScale.y(asPrice(p)), price: (y) => input.priceScale.price(asPixel(y)) },
+      {
+        x: (i) => input.timeScale.x(asBarIndex(i)),
+        indexAt: (x) => input.timeScale.indexAt(asPixel(x)),
+      },
+      input.layout.plot,
+    );
+    drawPlacementPreview(surfaces.crosshair.ctx, geometry, input.layout.plot, theme);
+  };
+
   const drawMeasureOverlay = (input: FrameInput): void => {
     const m = measure;
     if (m === null) return;
@@ -905,7 +964,10 @@ export function createChart(o: ChartOptions): Chart {
       drawWatermark(surfaces.grid.ctx, o.symbol, o.tf, input.layout.plot, theme);
     }
     drawAnnotations(input, mask);
-    if ((mask & DirtyFlags.Crosshair) !== 0) drawMeasureOverlay(input);
+    if ((mask & DirtyFlags.Crosshair) !== 0) {
+      drawMeasureOverlay(input);
+      drawPlacementOverlay(input);
+    }
     lastInput = input;
     frameCount += 1;
     frameTimes[frameTimeCount % frameTimes.length] = performance.now() - started;
@@ -1130,6 +1192,23 @@ export function createChart(o: ChartOptions): Chart {
       const next = time === null ? null : Number(time);
       if (next === externalPointerTime) return;
       externalPointerTime = next;
+      scheduler.invalidate(DirtyFlags.Crosshair);
+    },
+    constrainAnchor(from, to) {
+      const input = lastInput;
+      if (input === null) return to;
+      const project = (a: Anchor): { x: number; y: number } => ({
+        x: input.timeScale.x(asBarIndex(a.barIndex)),
+        y: input.priceScale.y(asPrice(a.price)),
+      });
+      const snapped = constrainToAngle(project(from), project(to));
+      return {
+        barIndex: input.timeScale.indexAt(asPixel(snapped.x)),
+        price: input.priceScale.price(asPixel(snapped.y)),
+      };
+    },
+    setPlacement(next) {
+      placement = next;
       scheduler.invalidate(DirtyFlags.Crosshair);
     },
     setMeasure(next) {

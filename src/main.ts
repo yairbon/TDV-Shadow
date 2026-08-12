@@ -464,6 +464,7 @@ function setActivePane(index: number): void {
   // across would build a shape from one anchor in one chart's data space and the next in
   // another's — a line between two unrelated instruments.
   pending = [];
+  clearPlacement();
   // Same reasoning for the replay transport: it drives ONE chart, so it must not silently
   // retarget to whichever pane you clicked next.
   stopReplayTimer();
@@ -1187,6 +1188,7 @@ if (rail !== null) {
     button.addEventListener('click', () => {
       activeTool = button.dataset['tool'] ?? '';
       pending = [];
+      clearPlacement();
       for (const other of rail.querySelectorAll('button[data-tool]')) {
         other.setAttribute('aria-pressed', String(other === button));
       }
@@ -1221,6 +1223,7 @@ if (rail !== null) {
     capture();
     chart?.drawings.clear();
     pending = [];
+    clearPlacement();
     status();
   });
   rail.append(eraseButton);
@@ -1289,12 +1292,23 @@ panesHost.addEventListener('click', (event) => {
 
   const rect = hostOf(event).getBoundingClientRect();
   const snapped = chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, magnet);
-  pending = [...pending, snapped.anchor];
+  // The SAME constraint the preview drew with. Applying it to the preview only would
+  // show a 45° line and then commit a different one — worse than not offering it.
+  const placedAnchor =
+    event.shiftKey && pending.length > 0
+      ? chart.constrainAnchor(pending[pending.length - 1], snapped.anchor)
+      : snapped.anchor;
+  pending = [...pending, placedAnchor];
 
   if (pending.length >= TOOL_DEFINITIONS[activeTool].anchorCount) {
     capture();
     chart.drawings.add(activeTool, pending);
     pending = [];
+    clearPlacement();
+  } else {
+    // Repin immediately rather than waiting for the next pointer move, so the anchor
+    // shows up under the cursor the instant it is clicked.
+    chart.setPlacement({ kind: activeTool, placed: pending, cursor: placedAnchor });
   }
   status();
 });
@@ -1818,11 +1832,37 @@ panesHost.addEventListener('pointermove', (event) => {
   if (active === null || drag !== null) return;
   if (activeTool !== '') {
     hostOf(event).style.cursor = 'crosshair';
+    if (isDrawingTool(activeTool)) pushPlacement(event);
     return;
   }
   const point = localPoint(event);
   hostOf(event).style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
 });
+
+/**
+ * Hands the in-progress drawing to the chart so the renderer can paint it.
+ *
+ * Called on every pointer move with a tool armed, which is the cadence the rubber band
+ * needs — the crosshair layer already repaints at exactly that rate.
+ */
+function pushPlacement(event: PointerEvent): void {
+  const active = currentChart();
+  if (active === null || !isDrawingTool(activeTool)) return;
+  const rect = hostOf(event).getBoundingClientRect();
+  const snapped = active.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, magnet);
+  // Shift constrains to 45°, but only once there is something to measure the angle FROM.
+  const cursor =
+    event.shiftKey && pending.length > 0
+      ? active.constrainAnchor(pending[pending.length - 1], snapped.anchor)
+      : snapped.anchor;
+  active.setPlacement({ kind: activeTool, placed: pending, cursor });
+}
+
+/** Takes the preview off every pane. Disarming, finishing and Escape all land here. */
+function clearPlacement(): void {
+  for (const pane of panes) pane.chart?.setPlacement(null);
+  currentChart()?.setPlacement(null);
+}
 
 // ---------------------------------------------------------------- drawing style
 
@@ -2368,6 +2408,7 @@ const TOOL_KEYS: Readonly<Record<string, DrawingKind>> = {
 function selectTool(kind: string): void {
   activeTool = kind;
   pending = [];
+  clearPlacement();
   const rail = el('#tool-rail');
   for (const button of rail?.querySelectorAll('button[data-tool]') ?? []) {
     button.setAttribute('aria-pressed', String((button as HTMLElement).dataset['tool'] === kind));
@@ -2401,6 +2442,7 @@ document.addEventListener('keydown', (event) => {
     }
     if (pending.length > 0) {
       pending = [];
+      clearPlacement();
       status();
     } else {
       selectTool('');

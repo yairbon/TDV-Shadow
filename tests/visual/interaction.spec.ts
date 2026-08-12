@@ -546,3 +546,101 @@ test.describe('level labels', () => {
     expect(leftAfter - leftBefore).toBe(0);
   });
 });
+
+test.describe('placement preview', () => {
+  /** Painted pixels on the crosshair layer, where the in-progress drawing lives. */
+  const crosshairInk = (page: Page): Promise<number> =>
+    page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>(
+        '#chart canvas[data-layer="crosshair"]',
+      );
+      const ctx = canvas?.getContext('2d') ?? null;
+      if (canvas === null || ctx === null) return -1;
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let count = 0;
+      for (let offset = 3; offset < data.length; offset += 4) if (data[offset] > 40) count++;
+      return count;
+    });
+
+  const chartBox = async (page: Page): Promise<{ x: number; y: number }> => {
+    const box = await page.locator('#chart').boundingBox();
+    return { x: box?.x ?? 0, y: box?.y ?? 0 };
+  };
+
+  test('the shape follows the cursor between the first and second click', async ({ page }) => {
+    // The reported bug: placing a trendline painted nothing at all until the second
+    // click, so there was no way to see where the line was going.
+    await open(page);
+    const origin = await chartBox(page);
+    await page.keyboard.press('Alt+t');
+    await page.mouse.click(origin.x + 300, origin.y + 300);
+    await page.waitForTimeout(250);
+
+    await page.mouse.move(origin.x + 700, origin.y + 200, { steps: 8 });
+    await page.waitForTimeout(250);
+    const near = await crosshairInk(page);
+
+    await page.mouse.move(origin.x + 1000, origin.y + 460, { steps: 8 });
+    await page.waitForTimeout(250);
+    const far = await crosshairInk(page);
+
+    // A longer rubber band is more ink. Equal counts mean the preview is frozen — which
+    // is exactly what a preview that ignores the cursor would produce.
+    expect(near).toBeGreaterThan(0);
+    expect(far).toBeGreaterThan(near);
+  });
+
+  test('the preview disappears once the drawing is committed', async ({ page }) => {
+    await open(page);
+    const origin = await chartBox(page);
+    await page.keyboard.press('Alt+t');
+    await page.mouse.click(origin.x + 300, origin.y + 300);
+    await page.mouse.move(origin.x + 800, origin.y + 220, { steps: 6 });
+    await page.waitForTimeout(250);
+    const placing = await crosshairInk(page);
+
+    await page.mouse.click(origin.x + 800, origin.y + 220);
+    await page.waitForTimeout(300);
+    const committed = await crosshairInk(page);
+
+    expect(await list(page)).toHaveLength(1);
+    // The committed line moves to the overlay, so the crosshair layer sheds the preview.
+    expect(committed).toBeLessThan(placing);
+  });
+
+  test('Escape cancels the placement and clears the preview', async ({ page }) => {
+    await open(page);
+    const origin = await chartBox(page);
+    await page.keyboard.press('Alt+t');
+    await page.mouse.click(origin.x + 300, origin.y + 300);
+    await page.mouse.move(origin.x + 800, origin.y + 220, { steps: 6 });
+    await page.waitForTimeout(250);
+    const placing = await crosshairInk(page);
+
+    await page.keyboard.press('Escape');
+    await page.mouse.move(origin.x + 810, origin.y + 230, { steps: 3 });
+    await page.waitForTimeout(300);
+
+    expect(await list(page)).toHaveLength(0);
+    expect(await crosshairInk(page)).toBeLessThan(placing);
+  });
+
+  test('a half-placed drawing is never selectable or undoable', async ({ page }) => {
+    // The preview must not leak into the real stores: `drawDrawings` keeps its
+    // `complete` gate for exactly this reason.
+    await open(page);
+    const origin = await chartBox(page);
+    await page.keyboard.press('Alt+t');
+    await page.mouse.click(origin.x + 300, origin.y + 300);
+    await page.mouse.move(origin.x + 700, origin.y + 250, { steps: 6 });
+    await page.waitForTimeout(250);
+
+    expect(await list(page)).toHaveLength(0);
+    const selected = await page.evaluate(() => {
+      const chart = (window as { __chart?: { drawings: { selected: () => string | null } } })
+        .__chart;
+      return chart?.drawings.selected() ?? null;
+    });
+    expect(selected).toBeNull();
+  });
+});
