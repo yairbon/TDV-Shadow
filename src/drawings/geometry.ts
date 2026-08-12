@@ -423,6 +423,15 @@ export function buildGeometry(
       return { ...base, segments: [], levels: [], points, labels, box };
     }
 
+    case 'polyline': {
+      // OPEN: one segment per consecutive pair and nothing joining the last anchor back to
+      // the first. Closing it would turn a path into a polygon and hand the hit tester a
+      // chord across empty chart the user never drew.
+      const segments: Segment[] = [];
+      for (let i = 1; i < points.length; i++) segments.push({ from: points[i - 1], to: points[i] });
+      return { ...base, segments, levels: [], points, labels: [], box: null };
+    }
+
     case 'trend-angle': {
       /*
        * PIXEL space, and here that is the definition rather than an exception grudgingly

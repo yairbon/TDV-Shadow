@@ -87,6 +87,16 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   // A trend line that reports the angle it subtends ON SCREEN — see the comment on its
   // case in `geometry.ts` for why that is a pixel measurement and not a rule breach.
   'trend-angle': define('trend-angle', 'Trend Angle', 2),
+  /*
+   * Eight, following the fixed-arity convention every multi-anchor tool here already uses
+   * (`elliott-impulse` is five, `pitchfork` three): placement ends when `anchors.length`
+   * reaches `anchorCount`, and nothing in the placement loop can finish a drawing early.
+   *
+   * The GEOMETRY is arity-agnostic — it strings a segment between each consecutive pair,
+   * however many there are — so if the rail ever grows a double-click/Escape "finish here"
+   * gesture, this number is the only thing that has to change.
+   */
+  polyline: define('polyline', 'Polyline', 8),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */
