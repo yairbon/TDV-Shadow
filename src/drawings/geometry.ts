@@ -122,6 +122,43 @@ const empty = (drawing: Drawing, complete: boolean): DrawingGeometry => ({
   box: null,
 });
 
+/** Reads a numeric tool param, falling back when it is absent or holds another type. */
+function numberParam(drawing: Drawing, key: string, fallback: number): number {
+  const value = drawing.params[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** Normalised axis-aligned box through two projected points. */
+function boxThrough(a: Point, b: Point): NonNullable<DrawingGeometry['box']> {
+  return {
+    x0: Math.min(a.x, b.x),
+    y0: Math.min(a.y, b.y),
+    x1: Math.max(a.x, b.x),
+    y1: Math.max(a.y, b.y),
+  };
+}
+
+/** Centre of a box — where a measurement annotation belongs. */
+function centreOf(box: NonNullable<DrawingGeometry['box']>): Point {
+  return { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+}
+
+/**
+ * `+20.00 (+20.00%)` — the measurement a price-range tool exists to show.
+ *
+ * PRICE space, from the anchors themselves: deriving the move from the pixel height of
+ * the box would report a different number on a log scale for the same two anchors.
+ * The percentage is relative to the FIRST anchor, the price the move started from, and is
+ * omitted entirely when that is zero rather than reported as `Infinity` or as a bare 0.
+ */
+function priceMoveLabel(from: number, to: number, precision: number): string {
+  const delta = to - from;
+  const signed = `${delta > 0 ? '+' : ''}${delta.toFixed(precision)}`;
+  if (from === 0) return signed;
+  const percent = (delta / from) * 100;
+  return `${signed} (${percent > 0 ? '+' : ''}${percent.toFixed(2)}%)`;
+}
+
 /** Formats a fib ratio for its label: 0.618 -> "0.618", 1 -> "1". */
 function ratioLabel(ratio: number): string {
   return Number.isInteger(ratio) ? String(ratio) : ratio.toFixed(3).replace(/0+$/, '');
@@ -309,6 +346,31 @@ export function buildGeometry(
         points,
         labels: [],
         box: null,
+      };
+    }
+
+    case 'price-range': {
+      const box = boxThrough(p0, p1);
+      return {
+        ...base,
+        segments: [],
+        levels: [],
+        points,
+        // One annotation, at the centre of the box: the tool is a measurement, and the
+        // measurement is the whole output. The renderer draws label text starting slightly
+        // right of `x`, which is as close to centred as it can get without measuring text
+        // here — geometry has no font metrics.
+        labels: [
+          {
+            ...centreOf(box),
+            text: priceMoveLabel(
+              drawing.anchors[0].price,
+              drawing.anchors[1].price,
+              numberParam(drawing, 'precision', 2),
+            ),
+          },
+        ],
+        box,
       };
     }
 
