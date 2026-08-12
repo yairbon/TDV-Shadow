@@ -22,7 +22,7 @@ import {
   type PaneState,
   type Workspace,
 } from './app/workspace.js';
-import { createHistory, type HistoryState } from './app/history.js';
+import { createHistory, type History, type HistoryState } from './app/history.js';
 import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
@@ -103,6 +103,14 @@ interface Pane {
   scaleMode: PriceScaleMode;
   inverted: boolean;
   alertsJson: string;
+  /**
+   * Undo is per pane, because the state it restores is.
+   *
+   * A single shared stack would happily apply pane A's drawings to pane B: `capture()`
+   * records the ACTIVE chart's annotations, so a Ctrl+Z after switching panes replayed
+   * one chart's history onto another's.
+   */
+  history: History;
 }
 
 export type LayoutId = '1' | '2h' | '2v' | '4';
@@ -191,6 +199,8 @@ let chartSettings: ChartSettingsForm = saved?.chartSettings ?? defaultChartSetti
  */
 let alertsJson: string = savedPane?.alerts ?? '';
 let chart: Chart | null = null;
+/** The ACTIVE pane's undo stack; swapped in and out by adoptActive/stashActive. */
+let history: History = createHistory();
 const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
 
@@ -285,6 +295,7 @@ function stashActive(): void {
   pane.scaleMode = scaleMode;
   pane.inverted = inverted;
   pane.alertsJson = alertsJson;
+  pane.history = history;
 }
 
 function adoptActive(): void {
@@ -297,6 +308,7 @@ function adoptActive(): void {
   scaleMode = pane.scaleMode;
   inverted = pane.inverted;
   alertsJson = pane.alertsJson;
+  history = pane.history;
   window.__chartGeometry = () => chart?.geometry() ?? null;
   if (chart === null) delete window.__chart;
   else window.__chart = chart;
@@ -373,6 +385,27 @@ function restorePane(target: Chart, state: PaneState): void {
   }
 }
 
+/**
+ * Rebuilds every pane in place, preserving each one's view.
+ *
+ * The theme and the renderer are GLOBAL — both require tearing a chart down — so
+ * rebuilding only the active pane left the others on the old theme or the old renderer,
+ * which looked like the toggle half-working.
+ */
+function rebuildAllPanes(): void {
+  const returnTo = activeIndex;
+  for (const pane of panes) {
+    if (pane.index !== activeIndex) setActivePane(pane.index);
+    const view = chart?.view.get();
+    build(view?.scrollPosition, view?.barSpacing);
+    // A rebuilt chart is a new object; the pane record has to learn about it before the
+    // next switch stashes a stale one.
+    stashActive();
+  }
+  setActivePane(returnTo);
+  markActive();
+}
+
 function newPane(index: number): Pane {
   const host =
     index === 0 && chartHost !== null
@@ -396,6 +429,7 @@ function newPane(index: number): Pane {
     scaleMode: 'linear',
     inverted: false,
     alertsJson: '',
+    history: createHistory(),
   };
 }
 
@@ -790,8 +824,7 @@ const glButton = btn('#renderer-webgl');
 glButton?.addEventListener('click', () => {
   rendererMode = rendererMode === 'webgl' ? 'canvas2d' : 'webgl';
   glButton.setAttribute('aria-pressed', String(rendererMode === 'webgl'));
-  const view = chart?.view.get();
-  build(view?.scrollPosition, view?.barSpacing);
+  rebuildAllPanes();
 });
 
 let liveTimer: number | null = null;
@@ -1423,14 +1456,11 @@ el('#theme-toggle')?.addEventListener('click', () => {
     chartSettings = { ...chartSettings, upColor: fresh.upColor, downColor: fresh.downColor };
   }
 
-  const view = chart?.view.get();
-  build(view?.scrollPosition, view?.barSpacing);
+  rebuildAllPanes();
   persist();
 });
 
 // ---------------------------------------------------------------- history
-
-const history = createHistory();
 
 function snapshotState(): HistoryState | null {
   const active = currentChart();

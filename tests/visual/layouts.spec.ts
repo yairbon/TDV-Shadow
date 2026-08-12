@@ -447,6 +447,88 @@ test.describe('multi-chart layouts', () => {
     expect(after[1]).not.toBe(before[1]);
   });
 
+  test('undo is per pane, not shared', async ({ page }) => {
+    // A single stack would happily apply pane A's drawings to pane B: capture() records
+    // the ACTIVE chart's annotations, so Ctrl+Z after a pane switch replayed one chart's
+    // history onto another's.
+    await open(page);
+    await setLayout(page, '2h');
+
+    /**
+     * Places a horizontal line the way a USER does — armed tool, click in the pane.
+     *
+     * Deliberately not `__tdv.drawShape`: the control API writes straight to the store
+     * and never touches the undo stack, so a test driven through it would prove nothing
+     * about undo.
+     */
+    const draw = async (index: number, offsetY: number): Promise<void> => {
+      await page.keyboard.press('Alt+h');
+      await page.waitForTimeout(120);
+      const box = await page.locator(`#panes .pane[data-pane="${String(index)}"]`).boundingBox();
+      await page.mouse.click((box?.x ?? 0) + 200, (box?.y ?? 0) + offsetY);
+      await page.waitForTimeout(200);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(120);
+    };
+    const count = (): Promise<number> =>
+      page.evaluate(() => {
+        const chart = (window as { __chart?: { drawings: { list: () => readonly unknown[] } } })
+          .__chart;
+        return chart?.drawings.list().length ?? -1;
+      });
+
+    // Two drawings on pane 0, none on pane 1.
+    await clickPane(page, 0);
+    await draw(0, 180);
+    await draw(0, 260);
+    expect(await count()).toBe(2);
+
+    await clickPane(page, 1);
+    expect(await count()).toBe(0);
+
+    // Undo on pane 1 has nothing of its own to undo, and must not reach into pane 0's.
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(300);
+    expect(await count()).toBe(0);
+    await clickPane(page, 0);
+    expect(await count()).toBe(2);
+
+    // Pane 0's own undo still works.
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(300);
+    expect(await count()).toBe(1);
+  });
+
+  test('the theme toggle repaints every pane, not just the active one', async ({ page }) => {
+    // Theme and renderer are global and both need a chart torn down, so rebuilding only
+    // the active pane left the others on the old theme.
+    await open(page);
+    await setLayout(page, '2h');
+
+    /** Background of a pane's grid layer, sampled at a corner. */
+    const background = (index: number): Promise<string> =>
+      page.evaluate((i) => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          `#panes .pane[data-pane="${String(i)}"] canvas[data-layer="grid"]`,
+        );
+        const ctx = canvas?.getContext('2d') ?? null;
+        if (canvas === null || ctx === null) return '';
+        const d = ctx.getImageData(2, 2, 1, 1).data;
+        return `${String(d[0])},${String(d[1])},${String(d[2])}`;
+      }, index);
+
+    const before = [await background(0), await background(1)];
+    expect(before[0]).not.toBe('');
+    await page.click('#theme-toggle');
+    await page.waitForTimeout(700);
+    const after = [await background(0), await background(1)];
+
+    expect(after[0]).not.toBe(before[0]);
+    expect(after[1]).not.toBe(before[1]);
+    // Both panes end on the SAME theme, which is the part that was broken.
+    expect(after[0]).toBe(after[1]);
+  });
+
   test('the layout and each pane symbol survive a reload', async ({ page }) => {
     await open(page);
     await setLayout(page, '2h');
