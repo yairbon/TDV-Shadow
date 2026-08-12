@@ -84,6 +84,9 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
     precision: 2,
     barMs: 0,
   }),
+  // A trend line that reports the angle it subtends ON SCREEN — see the comment on its
+  // case in `geometry.ts` for why that is a pixel measurement and not a rule breach.
+  'trend-angle': define('trend-angle', 'Trend Angle', 2),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */

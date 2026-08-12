@@ -40,6 +40,7 @@ export const DRAWING_KINDS = [
   'price-range',
   'date-range',
   'date-price-range',
+  'trend-angle',
 ] as const;
 
 export type DrawingKind = (typeof DRAWING_KINDS)[number];

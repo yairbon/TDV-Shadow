@@ -423,6 +423,30 @@ export function buildGeometry(
       return { ...base, segments: [], levels: [], points, labels, box };
     }
 
+    case 'trend-angle': {
+      /*
+       * PIXEL space, and here that is the definition rather than an exception grudgingly
+       * taken: an angle is a property of the picture. The same two anchors subtend a
+       * different angle at every zoom, every bar spacing and every price range — which is
+       * precisely the number this tool exists to report, and why it is worth showing at
+       * all. Computing `atan2(Δprice, Δbar)` instead would produce a figure in price-units
+       * per bar wearing a degree sign, constant while the chart it describes changed shape.
+       *
+       * `p0.y - p1.y` and not the other way round: screen y grows downwards, so this makes
+       * a rising line read as a positive angle, the way a person would say it.
+       */
+      const degrees = (Math.atan2(p0.y - p1.y, p1.x - p0.x) * 180) / Math.PI;
+      return {
+        ...base,
+        segments: [{ from: p0, to: p1 }],
+        levels: [],
+        points,
+        // At the far end, where the eye ends up after following the line.
+        labels: [{ ...p1, text: `${degrees.toFixed(1)}°` }],
+        box: null,
+      };
+    }
+
     case 'parallel-channel': {
       const p2 = points[2];
       /*
