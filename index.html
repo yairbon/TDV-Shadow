@@ -146,6 +146,15 @@
       .tf[aria-pressed='true'] {
         color: #fff;
       }
+      /* A native select sizes itself to its LONGEST option, so bundling 20 more symbols
+         grew this one from 180px to 304px and shoved six controls off the right edge of
+         the bar — the layout picker, sync, settings, theme and reset all became
+         unreachable at 1440px. The full label still shows in the open dropdown, and it
+         stays long because search reads it. */
+      #symbol-pick {
+        max-width: 190px;
+        text-overflow: ellipsis;
+      }
       select.tb {
         appearance: none;
         padding-right: 22px;
