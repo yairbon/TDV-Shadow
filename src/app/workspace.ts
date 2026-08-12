@@ -188,7 +188,17 @@ export function loadWorkspace(): Workspace | null {
     return null;
   }
   if (raw === null) return null;
+  return parseWorkspace(raw);
+}
 
+/**
+ * Validates a serialised workspace, wherever it came from.
+ *
+ * Shared by the autosave and by named layouts on purpose: two copies of this would drift
+ * the first time the schema moved, and then a payload would load as one and be rejected
+ * as the other.
+ */
+function parseWorkspace(raw: string): Workspace | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -316,4 +326,113 @@ export function clearWorkspace(): void {
   } catch {
     /* nothing to do */
   }
+}
+
+// ---------------------------------------------------------------- named layouts
+
+/**
+ * Named layouts, on top of the single autosaved workspace.
+ *
+ * TradingView's model: the autosave is where you are RIGHT NOW, and a named layout is a
+ * snapshot you chose to keep. They are deliberately separate keys — saving a layout must
+ * not disturb the autosave, and the autosave must keep tracking the live chart after you
+ * have saved one, or "save" would silently become "switch to".
+ *
+ * Stored as one index plus one entry per layout rather than a single blob, so opening a
+ * layout parses only that layout, and a corrupt entry cannot take the others with it.
+ */
+const LAYOUT_INDEX_KEY = 'tdv-shadow.layouts';
+const LAYOUT_PREFIX = 'tdv-shadow.layout.';
+
+export interface SavedLayout {
+  readonly id: string;
+  readonly name: string;
+  /** UTC epoch ms, so the list can be ordered most-recent-first. */
+  readonly savedAt: number;
+}
+
+function readIndex(): SavedLayout[] {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LAYOUT_INDEX_KEY);
+  } catch {
+    return [];
+  }
+  if (raw === null) return [];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  return (parsed as unknown[]).flatMap((entry) => {
+    if (typeof entry !== 'object' || entry === null) return [];
+    const record = entry as Record<string, unknown>;
+    const { id, name, savedAt } = record;
+    if (typeof id !== 'string' || id === '') return [];
+    if (typeof name !== 'string' || name === '') return [];
+    return [{ id, name, savedAt: typeof savedAt === 'number' ? savedAt : 0 }];
+  });
+}
+
+function writeIndex(entries: readonly SavedLayout[]): void {
+  try {
+    localStorage.setItem(LAYOUT_INDEX_KEY, JSON.stringify(entries));
+  } catch {
+    /* private mode or a full quota; the layout list is not worth breaking the app over */
+  }
+}
+
+/** Saved layouts, most recently saved first. */
+export function listLayouts(): readonly SavedLayout[] {
+  return [...readIndex()].sort((a, b) => b.savedAt - a.savedAt);
+}
+
+/**
+ * Saves `workspace` under `name`, replacing any layout with the same name.
+ *
+ * Replacing by name rather than appending: "save" on a name you already used means
+ * update, and a list with three identical names is a worse outcome than an overwrite the
+ * user can see coming.
+ */
+export function saveLayout(name: string, workspace: Workspace): SavedLayout | null {
+  const trimmed = name.trim();
+  if (trimmed === '') return null;
+
+  const index = readIndex();
+  const existing = index.find((entry) => entry.name === trimmed);
+  const id = existing?.id ?? `l${String(Date.now())}${String(Math.floor(Math.random() * 1e6))}`;
+  const entry: SavedLayout = { id, name: trimmed, savedAt: Date.now() };
+
+  try {
+    localStorage.setItem(LAYOUT_PREFIX + id, JSON.stringify({ version: VERSION, ...workspace }));
+  } catch {
+    return null;
+  }
+  writeIndex([...index.filter((e) => e.id !== id), entry]);
+  return entry;
+}
+
+/** Loads a saved layout, or null when it is missing or unreadable. */
+export function loadLayout(id: string): Workspace | null {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(LAYOUT_PREFIX + id);
+  } catch {
+    return null;
+  }
+  if (raw === null) return null;
+  return parseWorkspace(raw);
+}
+
+export function deleteLayout(id: string): void {
+  try {
+    localStorage.removeItem(LAYOUT_PREFIX + id);
+  } catch {
+    /* nothing to do */
+  }
+  writeIndex(readIndex().filter((entry) => entry.id !== id));
 }

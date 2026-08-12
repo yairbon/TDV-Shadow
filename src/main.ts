@@ -28,6 +28,8 @@ import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
 import { createToolbarOverflow } from './ui/toolbarOverflow.js';
 import { createObjectTree, type ObjectRow } from './ui/objectTree.js';
+import { deleteLayout, listLayouts, loadLayout, saveLayout } from './app/workspace.js';
+import { createTextPrompt } from './ui/prompt.js';
 import { searchSymbols, type MatchRange } from './app/symbolSearch.js';
 import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
@@ -1850,9 +1852,25 @@ function snapshotWorkspace(): Workspace | null {
   return { panes: states, layout, renderer: rendererMode, chartSettings };
 }
 
+/**
+ * Set while a saved layout is being applied, to stop the autosave overwriting it.
+ *
+ * Opening a layout writes it to the autosave key and reloads, so the tested boot-time
+ * restore does the work. But `beforeunload` also autosaves — so the reload was saving the
+ * chart the user was leaving over the layout they had just asked for, and then faithfully
+ * restoring that. The layout appeared to do nothing at all.
+ */
+let suspendAutosave = false;
+
 function persist(): void {
+  if (suspendAutosave) return;
   if (saveTimer !== null) window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
+    // Checked again here, not only on the way in: a save scheduled BEFORE the flag was
+    // set would otherwise still fire and land on top of the layout being applied. Putting
+    // the guard where the write happens makes the ordering irrelevant, which is better
+    // than clearing the timer at the call site and hoping every future caller remembers.
+    if (suspendAutosave) return;
     const workspace = snapshotWorkspace();
     if (workspace !== null) saveWorkspace(workspace);
   }, 400);
@@ -1860,6 +1878,7 @@ function persist(): void {
 
 window.setInterval(persist, 2000);
 window.addEventListener('beforeunload', () => {
+  if (suspendAutosave) return;
   const workspace = snapshotWorkspace();
   if (workspace !== null) saveWorkspace(workspace);
 });
@@ -2752,6 +2771,121 @@ document.addEventListener('keydown', (event) => {
     }
   }
 });
+
+// ---------------------------------------------------------------- saved layouts
+
+/**
+ * Named layouts, on top of the autosave.
+ *
+ * The autosave is where you are right now; a named layout is a snapshot you chose to
+ * keep. Saving one deliberately does NOT stop the autosave tracking the live chart —
+ * otherwise "save" would quietly become "switch to", and the next edit would go to the
+ * saved copy instead of to the session you are actually in.
+ */
+const layoutSelect = sel('#saved-layouts');
+
+function renderLayoutList(): void {
+  if (layoutSelect === null) return;
+  const saved = listLayouts();
+  layoutSelect.innerHTML = '';
+  const head = document.createElement('option');
+  head.value = '';
+  head.textContent = saved.length === 0 ? 'Layouts…' : `Layouts (${String(saved.length)})`;
+  layoutSelect.append(head);
+
+  for (const entry of saved) {
+    const option = document.createElement('option');
+    option.value = `open:${entry.id}`;
+    option.textContent = entry.name;
+    layoutSelect.append(option);
+  }
+
+  const separator = document.createElement('option');
+  separator.disabled = true;
+  separator.textContent = '──────────';
+  layoutSelect.append(separator);
+
+  const save = document.createElement('option');
+  save.value = 'save';
+  save.textContent = 'Save current as…';
+  layoutSelect.append(save);
+
+  if (saved.length > 0) {
+    const remove = document.createElement('option');
+    remove.value = 'manage';
+    remove.textContent = 'Delete a layout…';
+    layoutSelect.append(remove);
+  }
+  layoutSelect.value = '';
+}
+
+/**
+ * Applies a whole workspace: layout, panes and all.
+ *
+ * Reloads rather than rebuilding in place. Boot already knows how to restore a workspace
+ * — symbols, panes, per-symbol drawings, indicators, alerts, pane heights and the view —
+ * and re-implementing that here would be a second restore path that drifts from the one
+ * that runs every time the app starts. The workspace is written to the autosave key and
+ * the page is reloaded, so the tested path does the work.
+ */
+function applyLayout(id: string): void {
+  const workspace = loadLayout(id);
+  if (workspace === null) {
+    setStatus('that layout could not be read');
+    return;
+  }
+  // Before writing, not after: `persist` checks this flag both on entry and inside its
+  // debounced callback, so setting it here is enough to stop an in-flight save landing on
+  // top of the layout between this write and the reload.
+  suspendAutosave = true;
+  saveWorkspace(workspace);
+  window.location.reload();
+}
+
+const textPrompt = createTextPrompt();
+
+async function saveCurrentLayout(): Promise<void> {
+  const workspace = snapshotWorkspace();
+  if (workspace === null) return;
+  const name = await textPrompt.ask({
+    title: 'Save layout',
+    label: 'Name',
+    confirmLabel: 'Save',
+  });
+  if (name === null || name === '') return;
+  const entry = saveLayout(name, workspace);
+  renderLayoutList();
+  setStatus(entry === null ? 'could not save that layout' : `saved “${entry.name}”`);
+}
+
+async function deleteNamedLayout(): Promise<void> {
+  const saved = listLayouts();
+  const name = await textPrompt.ask({
+    title: 'Delete layout',
+    label: `Name — one of: ${saved.map((l) => l.name).join(', ')}`,
+    confirmLabel: 'Delete',
+  });
+  if (name === null || name === '') return;
+  const match = saved.find((l) => l.name === name);
+  if (match === undefined) {
+    setStatus(`no layout named “${name}”`);
+    return;
+  }
+  deleteLayout(match.id);
+  renderLayoutList();
+  setStatus(`deleted “${match.name}”`);
+}
+
+layoutSelect?.addEventListener('change', () => {
+  const value = layoutSelect.value;
+  layoutSelect.value = '';
+  if (value === '') return;
+  if (value === 'save') void saveCurrentLayout();
+  else if (value === 'manage') void deleteNamedLayout();
+  else if (value.startsWith('open:')) applyLayout(value.slice('open:'.length));
+});
+
+renderLayoutList();
 
 // ---------------------------------------------------------------- toolbar overflow
 

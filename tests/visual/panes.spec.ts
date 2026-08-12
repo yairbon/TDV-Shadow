@@ -9,6 +9,7 @@
 
 import type { Page } from '@playwright/test';
 import { expect, test } from './harness.js';
+import { clickControl } from './controls.js';
 
 interface Geometry {
   readonly plot: number;
@@ -149,7 +150,7 @@ test.describe('resizable panes', () => {
     await dragDivider(page, -120);
     const dragged = await geometry(page);
 
-    await page.click('#theme-toggle');
+    await clickControl(page, '#theme-toggle');
     await page.waitForTimeout(700);
 
     const after = await geometry(page);

@@ -209,8 +209,15 @@ Three more from the same pass, each of which only shows up on screen:
   a pane vanish. Persisted without a schema bump, since the field is optional in both
   directions and bumping would have discarded every existing workspace.
 
-Still open in Tier 2: multiple price scales (left/right assignment per series), and named
-layouts.
+- **Named layouts.** The autosave is where you are right now; a named layout is a snapshot
+  you chose to keep, on its own key. Saving deliberately does NOT stop the autosave
+  tracking the live chart, or "save" would quietly become "switch to" and the next edit
+  would go to the saved copy. Opening one writes it to the autosave key and reloads, so
+  the boot-time restore — which already knows how to rebuild symbols, panes, per-symbol
+  drawings, indicators, alerts, pane heights and the view — does the work, rather than a
+  second restore path that would drift from the one that runs every start.
+
+Still open in Tier 2: multiple price scales (left/right assignment per series).
 
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
