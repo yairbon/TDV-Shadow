@@ -429,6 +429,16 @@ describe('layout — resizePane', () => {
     }
     const bare = computeLayout({ ...base, volumePaneFraction: 0 });
     expect([...resizePane(bare, base, 0, 300)]).toEqual([]);
+    expect(Object.isFrozen(resizePane(start, threePane, 0, 300))).toBe(true);
+  });
+
+  it('returns finite fractions for a collapsed content box', () => {
+    // A window collapsed to nothing mid-drag: the divide-by-zero must not leak out.
+    const empty = computeLayout({ ...base, width: 20, height: 10 });
+    const collapsed: Layout = { ...empty, volume: makeRect(0, 0, 0, 10), panes: [] };
+    expect(collapsed.content.height).toBe(0);
+    for (const f of resizePane(collapsed, base, 0, 5)) expect(Number.isFinite(f)).toBe(true);
+    expect([...resizePane(collapsed, base, 0, 5)]).toEqual([0]);
   });
 
   it('never produces a stack that computeLayout has to re-clamp', () => {
