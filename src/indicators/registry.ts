@@ -3,6 +3,7 @@
 import type { Bar } from '../data/types.js';
 import { atrIndicator, bollingerIndicator, macdIndicator, rsiIndicator, stochasticIndicator } from './oscillators.js';
 import { emaIndicator, vwapIndicator, wmaIndicator } from './movingAverages.js';
+import { obvIndicator } from './obv.js';
 import { smaIndicator } from './sma.js';
 import { volumeIndicator, volumeProfileIndicator } from './volume.js';
 import type { IndicatorDefinition, IndicatorId, IndicatorParams, IndicatorResult } from './types.js';
@@ -19,6 +20,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   atr: atrIndicator,
   volume: volumeIndicator,
   'volume-profile': volumeProfileIndicator,
+  obv: obvIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {

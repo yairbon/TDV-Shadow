@@ -24,7 +24,8 @@ export type IndicatorId =
   | 'stochastic'
   | 'atr'
   | 'volume'
-  | 'volume-profile';
+  | 'volume-profile'
+  | 'obv';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
