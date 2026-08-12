@@ -219,6 +219,82 @@ test.describe('toolbar chrome', () => {
     });
   }
 
+  for (const width of [1920, 1600, 1440, 1280]) {
+    test(`every toolbar control is reachable at ${String(width)}px`, async ({ page }) => {
+      // The bar is one non-wrapping row and already held more than fits a 1440px window,
+      // so five controls sat past the right edge — reachable by scrolling the bar, but
+      // nothing said so. Controls move into an overflow panel now rather than off-screen.
+      await page.setViewportSize({ width, height: 800 });
+      await openChart(page, '?seed=7&bars=200&live=0');
+      await page.waitForTimeout(300);
+
+      const report = await page.evaluate(() => {
+        const bar = document.querySelector('#topbar');
+        const panel = document.querySelector('#toolbar-overflow');
+        if (bar === null || panel === null) return null;
+        const box = bar.getBoundingClientRect();
+        const clipped = [...bar.children]
+          .filter((node) => {
+            const b = node.getBoundingClientRect();
+            return b.width > 0 && (b.right > box.right + 1 || b.left < box.left - 1);
+          })
+          .map((node) => node.id);
+        return {
+          overflow: bar.scrollWidth - bar.clientWidth,
+          clipped,
+          inPanel: [...panel.children].map((node) => node.id),
+        };
+      });
+
+      expect(report).not.toBeNull();
+      // Nothing is half off the edge…
+      expect(report?.clipped).toEqual([]);
+      // …and the row genuinely fits rather than relying on the scroll.
+      expect(report?.overflow ?? 0).toBeLessThanOrEqual(1);
+      // A wide window needs no panel at all; a narrow one must actually use it.
+      if (width >= 1920) expect(report?.inPanel).toEqual([]);
+      else expect((report?.inPanel ?? []).length).toBeGreaterThan(0);
+    });
+  }
+
+  test('an evicted control is the same element, not a copy', async ({ page }) => {
+    // Mirroring a control into a menu means two widgets for one piece of state, and the
+    // copy drifts. There must be exactly one #theme-toggle in the document either way.
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await openChart(page, '?seed=7&bars=200&live=0');
+    await page.waitForTimeout(300);
+
+    expect(await page.locator('#theme-toggle').count()).toBe(1);
+    expect(await page.locator('#toolbar-overflow #theme-toggle').count()).toBe(1);
+
+    // And it still works from in there.
+    await page.click('#toolbar-more');
+    await page.waitForTimeout(150);
+    await page.click('#toolbar-overflow #theme-toggle');
+    await page.waitForTimeout(400);
+    const chrome = await page.evaluate(() => {
+      const bar = document.querySelector('#topbar');
+      const rgb = bar === null ? [] : (getComputedStyle(bar).backgroundColor.match(/\d+/g) ?? []);
+      return rgb.slice(0, 3).reduce((sum, n) => sum + Number(n), 0);
+    });
+    expect(chrome).toBeGreaterThan(300);
+  });
+
+  test('controls come back when the window widens again', async ({ page }) => {
+    // Measuring incrementally from the current state cannot recover: a control parked in
+    // the panel adds nothing to scrollWidth, so the bar always looks like it fits.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await openChart(page, '?seed=7&bars=200&live=0');
+    await page.waitForTimeout(300);
+    const narrow = await page.locator('#toolbar-overflow > *').count();
+    expect(narrow).toBeGreaterThan(0);
+
+    await page.setViewportSize({ width: 1920, height: 800 });
+    await page.waitForTimeout(500);
+    expect(await page.locator('#toolbar-overflow > *').count()).toBe(0);
+    expect(await page.locator('#toolbar-more').isHidden()).toBe(true);
+  });
+
   test('the status readout stays visible as its text grows', async ({ page }) => {
     // The text is longest with a tool armed and drawings placed, which is exactly when it
     // was being cut off.

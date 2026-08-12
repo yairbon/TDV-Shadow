@@ -26,6 +26,7 @@ import { createHistory, type History, type HistoryState } from './app/history.js
 import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
+import { createToolbarOverflow } from './ui/toolbarOverflow.js';
 import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
@@ -2489,3 +2490,19 @@ document.addEventListener('keydown', (event) => {
     }
   }
 });
+
+// ---------------------------------------------------------------- toolbar overflow
+
+/**
+ * Keeps the top bar's controls reachable at any window width.
+ *
+ * Installed last, so every control the bar will ever hold is already in the DOM when the
+ * first measurement runs — the overflow moves real nodes, and a control added afterwards
+ * would never be considered for eviction.
+ */
+const overflowBar = el('#topbar');
+const overflowButton = el('#toolbar-more');
+const overflowPanel = el('#toolbar-overflow');
+if (overflowBar !== null && overflowButton !== null && overflowPanel !== null) {
+  createToolbarOverflow(overflowBar, overflowButton, overflowPanel);
+}
