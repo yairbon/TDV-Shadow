@@ -394,3 +394,81 @@ export function drawWatermark(
   ctx.fillText(timeframe, plot.left + plot.width / 2, plot.top + plot.height / 2 + size * 0.45);
   ctx.restore();
 }
+
+/** A measurement in PIXELS, already projected by the caller. */
+export interface MeasureGeometry {
+  readonly from: { readonly x: number; readonly y: number };
+  readonly to: { readonly x: number; readonly y: number };
+  readonly priceDelta: number;
+  readonly percentDelta: number;
+  readonly bars: number;
+  readonly elapsed: string;
+  readonly pricePrecision: number;
+}
+
+/**
+ * Draws the shift-drag ruler on the crosshair layer.
+ *
+ * On the crosshair layer, not the overlay, because a measurement is transient chrome that
+ * follows the pointer: the overlay repaints only on Overlay-dirty frames, so dragging a
+ * ruler there would either lag the cursor or force the indicator layer to redraw on every
+ * pointer move.
+ */
+export function drawMeasure(
+  ctx: CanvasRenderingContext2D,
+  m: MeasureGeometry,
+  plot: Rect,
+  theme: Theme,
+): void {
+  const rising = m.priceDelta >= 0;
+  const accent = rising ? theme.upBody : theme.downBody;
+
+  clip(ctx, plot);
+
+  const x0 = Math.min(m.from.x, m.to.x);
+  const x1 = Math.max(m.from.x, m.to.x);
+  const y0 = Math.min(m.from.y, m.to.y);
+  const y1 = Math.max(m.from.y, m.to.y);
+
+  ctx.fillStyle = accent;
+  ctx.globalAlpha = 0.14;
+  ctx.fillRect(snapFill(x0), snapFill(y0), Math.max(1, snapFill(x1) - snapFill(x0)), Math.max(1, snapFill(y1) - snapFill(y0)));
+  ctx.globalAlpha = 1;
+
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(snapLine(x0), snapLine(y0), Math.max(1, x1 - x0), Math.max(1, y1 - y0));
+
+  // The direction arrow runs from the grab point to the cursor, so an upward measurement
+  // reads as upward even when the box is drawn from its top-left corner.
+  ctx.beginPath();
+  ctx.moveTo(snapLine(m.from.x), snapLine(m.from.y));
+  ctx.lineTo(snapLine(m.to.x), snapLine(m.to.y));
+  ctx.stroke();
+
+  const sign = m.priceDelta >= 0 ? '+' : '';
+  const top = `${sign}${m.priceDelta.toFixed(m.pricePrecision)} (${sign}${m.percentDelta.toFixed(2)}%)`;
+  const bottom = `${String(m.bars)} bar${m.bars === 1 ? '' : 's'}, ${m.elapsed}`;
+
+  ctx.font = theme.typography.font;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  const width = Math.max(ctx.measureText(top).width, ctx.measureText(bottom).width) + 16;
+  const height = 34;
+  // Anchored below the cursor when measuring downward and above when measuring upward, so
+  // the label never covers the bar the pointer is on.
+  const labelX = Math.min(Math.max(m.to.x, plot.left + width / 2), plot.left + plot.width - width / 2);
+  const labelY = Math.min(
+    Math.max(m.to.y + (m.to.y >= m.from.y ? height : -height), plot.top + height / 2),
+    plot.top + plot.height - height / 2,
+  );
+
+  ctx.fillStyle = accent;
+  ctx.fillRect(snapFill(labelX - width / 2), snapFill(labelY - height / 2), width, height);
+  ctx.fillStyle = theme.labelText;
+  ctx.fillText(top, labelX, labelY - 8);
+  ctx.fillText(bottom, labelX, labelY + 8);
+
+  ctx.textAlign = 'left';
+  ctx.restore();
+}

@@ -615,6 +615,8 @@ const ICONS: Readonly<Record<string, string>> = {
   'long-position': '<rect x="4" y="5" width="16" height="6"/><rect x="4" y="13" width="16" height="6"/>',
   'text-note': '<path d="M6 6h12M12 6v12"/>',
   magnet: '<path d="M7 4v8a5 5 0 0010 0V4"/><path d="M7 8h4M13 8h4"/>',
+  measure:
+    '<rect x="3" y="8" width="18" height="8" rx="1"/><path d="M7 8v3M11 8v4M15 8v3M19 8v4"/>',
   erase: '<path d="M6 6l12 12M18 6L6 18"/>',
 };
 
@@ -633,7 +635,22 @@ const RAIL_TOOLS: readonly string[] = [
   'elliott-impulse',
   'long-position',
   'text-note',
+  'measure',
 ];
+
+/**
+ * Rail entries that are NOT drawing tools. Without this the rail would look them up in
+ * TOOL_DEFINITIONS, which has no entry for them, and the lookup returns undefined at
+ * runtime while typing fine.
+ */
+const TOOL_LABELS: Readonly<Record<string, string | undefined>> = {
+  cursor: 'Cursor',
+  measure: 'Measure — shift-drag anywhere, or use this on touch',
+};
+
+/** True for a rail tool that places a drawing, as opposed to the cursor or the ruler. */
+const isDrawingTool = (tool: string): tool is DrawingKind =>
+  tool !== '' && tool !== 'measure' && tool in TOOL_DEFINITIONS;
 
 let activeTool = '';
 let magnet: MagnetMode = 'off';
@@ -649,7 +666,7 @@ if (rail !== null) {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset['tool'] = name === 'cursor' ? '' : name;
-    button.title = name === 'cursor' ? 'Cursor' : TOOL_DEFINITIONS[name as DrawingKind].label;
+    button.title = TOOL_LABELS[name] ?? TOOL_DEFINITIONS[name as DrawingKind].label;
     button.setAttribute('aria-label', button.title);
     button.setAttribute('aria-pressed', String(name === 'cursor'));
     button.innerHTML = icon(name);
@@ -705,12 +722,13 @@ function setStatus(text: string): void {
 function status(): void {
   const indicators = chart?.listIndicators().length ?? 0;
   const shapes = chart?.drawings.list().length ?? 0;
-  const placing =
-    activeTool === ''
+  const placing = isDrawingTool(activeTool)
+    ? ` · ${activeTool} ${String(pending.length)}/${String(
+        TOOL_DEFINITIONS[activeTool].anchorCount,
+      )}`
+    : activeTool === ''
       ? ''
-      : ` · ${activeTool} ${String(pending.length)}/${String(
-          TOOL_DEFINITIONS[activeTool as DrawingKind].anchorCount,
-        )}`;
+      : ` · ${activeTool}`;
   setStatus(
     `${String(indicators)} indicator${indicators === 1 ? '' : 's'} · ${String(shapes)} drawing${
       shapes === 1 ? '' : 's'
@@ -724,7 +742,7 @@ container.addEventListener('pointerdown', (event) => {
 });
 
 container.addEventListener('click', (event) => {
-  if (activeTool === '' || chart === null) return;
+  if (!isDrawingTool(activeTool) || chart === null) return;
   const start = downAt;
   // A click that followed a drag was a pan, not a placement.
   if (start !== null && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return;
@@ -733,9 +751,9 @@ container.addEventListener('click', (event) => {
   const snapped = chart.pickAnchor(event.clientX - rect.left, event.clientY - rect.top, magnet);
   pending = [...pending, snapped.anchor];
 
-  if (pending.length >= TOOL_DEFINITIONS[activeTool as DrawingKind].anchorCount) {
+  if (pending.length >= TOOL_DEFINITIONS[activeTool].anchorCount) {
     capture();
-    chart.drawings.add(activeTool as DrawingKind, pending);
+    chart.drawings.add(activeTool, pending);
     pending = [];
   }
   status();
@@ -1415,6 +1433,75 @@ container.addEventListener('contextmenu', (event) => {
   menu.open(event.clientX, event.clientY, entries);
 });
 
+// ---------------------------------------------------------------- measure tool
+
+/**
+ * The ruler (9.1).
+ *
+ * Two ways in, one implementation: Shift+drag anywhere on the plot, or the rail's ruler
+ * button for touch, where there is no Shift key. A measurement stays on screen after the
+ * drag so its numbers can be read, and is cleared by Escape or by the next plain click.
+ */
+let measuring: { from: { barIndex: number; price: number } } | null = null;
+
+function measureActive(event: PointerEvent): boolean {
+  return event.shiftKey || activeTool === 'measure';
+}
+
+container.addEventListener(
+  'pointerdown',
+  (event) => {
+    const active = currentChart();
+    if (active === null || event.button !== 0 || !measureActive(event)) return;
+    const point = localPoint(event);
+    if (axisAt(point.x, point.y) !== null) return;
+
+    const from = active.pickAnchor(point.x, point.y, magnet).anchor;
+    measuring = { from };
+    active.setMeasure({ from, to: from });
+    // Stop the pan handler and the drawing-placement click from seeing this gesture.
+    event.stopPropagation();
+    event.preventDefault();
+  },
+  true,
+);
+
+window.addEventListener('pointermove', (event) => {
+  const session = measuring;
+  const active = currentChart();
+  if (session === null || active === null) return;
+  const point = localPoint(event);
+  active.setMeasure({ from: session.from, to: active.pickAnchor(point.x, point.y, magnet).anchor });
+});
+
+/**
+ * True between the pointerup that finishes a measurement and the click that follows it.
+ *
+ * A drag ending somewhere else still fires a `click`, so without this flag the gesture
+ * that CREATES a measurement immediately clears it — which looked like the ruler simply
+ * not working when driven from the rail, where there is no Shift key to test for.
+ */
+let justMeasured = false;
+
+window.addEventListener('pointerup', () => {
+  if (measuring !== null) justMeasured = true;
+  measuring = null;
+});
+
+function clearMeasure(): void {
+  const active = currentChart();
+  if (active?.measure() != null) active.setMeasure(null);
+}
+
+// Any click that is not the tail of a measuring gesture clears the last measurement.
+container.addEventListener('click', () => {
+  if (justMeasured) {
+    justMeasured = false;
+    return;
+  }
+  clearMeasure();
+});
+
 // ---------------------------------------------------------------- shortcuts
 
 const TOOL_KEYS: Readonly<Record<string, DrawingKind>> = {
@@ -1455,6 +1542,10 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   if (event.key === 'Escape') {
+    if (active?.measure() != null) {
+      active.setMeasure(null);
+      return;
+    }
     if (pending.length > 0) {
       pending = [];
       status();

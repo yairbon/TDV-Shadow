@@ -10,7 +10,15 @@
 import { createSeriesStore, type SeriesStore } from '../data/store/seriesStore.js';
 import { createSnapshotSource, type SnapshotSource } from '../data/store/snapshot.js';
 import { createViewStore, type ViewStore } from '../data/store/viewStore.js';
-import { asBarIndex, asPixel, asPrice, type Bar, type PriceScaleMode, type Timeframe } from '../data/types.js';
+import {
+  asBarIndex,
+  asPixel,
+  asPrice,
+  TIMEFRAME_MS,
+  type Bar,
+  type PriceScaleMode,
+  type Timeframe,
+} from '../data/types.js';
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { makePriceRange } from '../renderer/scale/priceScale.js';
@@ -24,6 +32,7 @@ import {
   drawIndicatorOverlay,
   drawIndicatorPane,
   drawLastPrice,
+  drawMeasure,
   drawVolumeProfile,
   drawWatermark,
   type PlotStyles,
@@ -147,6 +156,12 @@ export interface Chart {
   /** Chart settings that used to require a full rebuild. */
   settings(): ChartSettings;
   updateSettings(patch: Partial<ChartSettings>): void;
+  /**
+   * The measurement ruler (9.1). Anchors are in DATA space like every drawing, so a
+   * measurement taken then zoomed still spans the same bars and the same prices.
+   */
+  setMeasure(measure: { readonly from: Anchor; readonly to: Anchor } | null): void;
+  measure(): { readonly from: Anchor; readonly to: Anchor } | null;
   priceZoom(): number;
   resetPriceZoom(): void;
   /** True when the view has been scrolled away from the newest bar. */
@@ -208,6 +223,7 @@ export function createChart(o: ChartOptions): Chart {
   let lastGeometry: readonly DrawingGeometry[] = [];
   let priceZoom = 1;
   let priceInverted = false;
+  let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
 
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
@@ -413,6 +429,50 @@ export function createChart(o: ChartOptions): Chart {
     }
   };
 
+  /**
+   * The measurement ruler, painted after the crosshair layer has been cleared.
+   *
+   * Elapsed time comes from the BAR TIMES when both ends land on real bars, and falls
+   * back to `bars * timeframeMs` only past the end of the series — where the ruler is
+   * measuring into empty space and there is no bar to read a time from.
+   */
+  const drawMeasureOverlay = (input: FrameInput): void => {
+    const m = measure;
+    if (m === null) return;
+    const bars = input.snapshot.series.bars;
+    const project = (anchor: Anchor): { x: number; y: number } => ({
+      x: input.timeScale.x(asBarIndex(anchor.barIndex)),
+      y: input.priceScale.y(asPrice(anchor.price)),
+    });
+
+    const barCount = Math.round(m.to.barIndex - m.from.barIndex);
+    const priceDelta = m.to.price - m.from.price;
+    const percentDelta = m.from.price === 0 ? 0 : (priceDelta / m.from.price) * 100;
+
+    const i0 = Math.round(m.from.barIndex);
+    const i1 = Math.round(m.to.barIndex);
+    const inRange = (i: number): boolean => i >= 0 && i < bars.length;
+    const spanMs =
+      inRange(i0) && inRange(i1)
+        ? bars[i1].t - bars[i0].t
+        : barCount * TIMEFRAME_MS[input.snapshot.series.tf];
+
+    drawMeasure(
+      surfaces.crosshair.ctx,
+      {
+        from: project(m.from),
+        to: project(m.to),
+        priceDelta,
+        percentDelta,
+        bars: Math.abs(barCount),
+        elapsed: formatElapsed(Math.abs(spanMs)),
+        pricePrecision,
+      },
+      input.layout.plot,
+      theme,
+    );
+  };
+
   // --- the single draw entrypoint ----------------------------------------
   const frame = (mask: DirtyMask): void => {
     let input = buildFrameInput({
@@ -479,6 +539,7 @@ export function createChart(o: ChartOptions): Chart {
       drawWatermark(surfaces.grid.ctx, o.symbol, o.tf, input.layout.plot, theme);
     }
     drawAnnotations(input, mask);
+    if ((mask & DirtyFlags.Crosshair) !== 0) drawMeasureOverlay(input);
     lastInput = input;
     frameCount += 1;
     o.container.dispatchEvent(
@@ -643,6 +704,11 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     priceInverted: () => priceInverted,
+    setMeasure(next) {
+      measure = next;
+      scheduler.invalidate(DirtyFlags.Crosshair);
+    },
+    measure: () => measure,
     settings: () => ({ theme, pricePrecision, showGrid, rightMargin }),
     updateSettings(patch) {
       theme = patch.theme ?? theme;
@@ -717,3 +783,15 @@ function sizeOf(canvas: HTMLCanvasElement): { width: number; height: number } {
 }
 
 export { createChartCanvases, type ChartCanvases };
+
+/** "3d 4h", "2h 15m", "45m", "30s" — the largest two units that matter. */
+function formatElapsed(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return `${String(Math.round(ms / 1000))}s`;
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  const rest = minutes % 60;
+  if (days > 0) return hours > 0 ? `${String(days)}d ${String(hours)}h` : `${String(days)}d`;
+  if (hours > 0) return rest > 0 ? `${String(hours)}h ${String(rest)}m` : `${String(hours)}h`;
+  return `${String(rest)}m`;
+}
