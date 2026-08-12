@@ -9,6 +9,7 @@ import { donchianIndicator } from './donchian.js';
 import { keltnerIndicator } from './keltner.js';
 import { obvIndicator } from './obv.js';
 import { smaIndicator } from './sma.js';
+import { supertrendIndicator } from './supertrend.js';
 import { volumeIndicator, volumeProfileIndicator } from './volume.js';
 import { williamsRIndicator } from './williamsR.js';
 import type { IndicatorDefinition, IndicatorId, IndicatorParams, IndicatorResult } from './types.js';
@@ -31,6 +32,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   donchian: donchianIndicator,
   keltner: keltnerIndicator,
   adx: adxIndicator,
+  supertrend: supertrendIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {

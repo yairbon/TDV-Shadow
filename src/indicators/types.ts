@@ -30,7 +30,8 @@ export type IndicatorId =
   | 'williams-r'
   | 'donchian'
   | 'keltner'
-  | 'adx';
+  | 'adx'
+  | 'supertrend';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
