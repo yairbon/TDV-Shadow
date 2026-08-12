@@ -9,6 +9,7 @@
 
 import type { Page } from '@playwright/test';
 import { expect, test } from './harness.js';
+import { clickControl } from './controls.js';
 
 interface CandleDump {
   readonly index: number;
@@ -362,7 +363,7 @@ test.describe('theme consistency', () => {
 
   test('the chrome and the canvas agree after the toggle', async ({ page }) => {
     await openChart(page, '?seed=7&bars=200&live=0');
-    await page.click('#theme-toggle');
+    await clickControl(page, '#theme-toggle');
     await page.waitForTimeout(400);
     expect(await chromeIsDark(page)).toBe(false);
     expect(await canvasIsDark(page)).toBe(false);

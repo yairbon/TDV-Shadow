@@ -12,6 +12,7 @@
 
 import type { Page } from '@playwright/test';
 import { expect, test } from './harness.js';
+import { clickControl, fillControl } from './controls.js';
 
 interface Counts {
   readonly symbol: string;
@@ -164,7 +165,7 @@ test.describe('state ownership across a symbol change', () => {
     });
     await page.waitForTimeout(300);
 
-    await page.click('#theme-toggle');
+    await clickControl(page, '#theme-toggle');
     await page.waitForTimeout(600);
     expect(await counts(page)).toMatchObject({ drawings: 2, indicators: 1 });
   });
@@ -224,8 +225,8 @@ test.describe('the status line reports what happened', () => {
     // `status()` runs on a 1s interval and overwrote the message, so pressing Load on an
     // unlisted ticker looked like the button did nothing at all.
     await open(page);
-    await page.fill('#symbol-input', 'GOOG');
-    await page.click('#symbol-load');
+    await fillControl(page, '#symbol-input', 'GOOG');
+    await clickControl(page, '#symbol-load');
     await page.waitForTimeout(1500);
 
     const text = (await page.textContent('#status')) ?? '';
@@ -237,12 +238,81 @@ test.describe('the status line reports what happened', () => {
   test('the counters come back once the message has had its turn', async ({ page }) => {
     // The hold must expire, or the first transient message pins the line forever.
     await open(page);
-    await page.fill('#symbol-input', 'GOOG');
-    await page.click('#symbol-load');
+    await fillControl(page, '#symbol-input', 'GOOG');
+    await clickControl(page, '#symbol-load');
     await page.waitForTimeout(1000);
     expect((await page.textContent('#status')) ?? '').toContain('GOOG');
 
     await page.waitForTimeout(7000);
     expect((await page.textContent('#status')) ?? '').toMatch(/^\d+ indicator/);
+  });
+});
+
+test.describe('symbol search', () => {
+  const openSearch = async (page: Page): Promise<void> => {
+    await page.click('#symbol-button');
+    await page.waitForSelector('#search-input', { state: 'visible' });
+  };
+
+  const results = (page: Page): Promise<string[]> =>
+    page.$$eval('#search-results li', (nodes) =>
+      nodes.map((node) => (node as HTMLElement).dataset['symbol'] ?? ''),
+    );
+
+  const type = async (page: Page, query: string): Promise<void> => {
+    await page.fill('#search-input', query);
+    await page.waitForTimeout(200);
+  };
+
+  test('finds a ticker whose letters are not contiguous', async ({ page }) => {
+    // The matcher this replaced was a substring filter, so "APL" found nothing at all.
+    await open(page);
+    await openSearch(page);
+    await type(page, 'APL');
+    expect((await results(page))[0]).toBe('AAPL');
+  });
+
+  test('orders by relevance, not by declaration order', async ({ page }) => {
+    await open(page);
+    await openSearch(page);
+    await type(page, 'A');
+    // AMD is a 1-of-3 ticker match; the others are 1-of-4. Declaration order would put
+    // AAPL first, and so would plain alphabetical.
+    expect((await results(page))[0]).toBe('AMD');
+  });
+
+  test('matches a company name, not just a ticker', async ({ page }) => {
+    await open(page);
+    await openSearch(page);
+    await type(page, 'gold');
+    expect((await results(page))[0]).toBe('GLD');
+  });
+
+  test('never writes the query into the page as markup', async ({ page }) => {
+    // The unmatched query is offered as a "fetch from the network" row, so it reaches
+    // the results list verbatim. It used to go through innerHTML unescaped.
+    await open(page);
+    await openSearch(page);
+    await type(page, '<img src=x onerror=alert(1)>');
+    expect(await page.locator('#search-results img').count()).toBe(0);
+    // …and it is still offered, rather than being dropped to dodge the problem.
+    expect(await page.locator('#search-results li').count()).toBeGreaterThan(0);
+  });
+
+  test('floats a symbol you have loaded to the top of an empty query', async ({ page }) => {
+    await open(page);
+    await pick(page, 'NVDA');
+    await openSearch(page);
+    expect((await results(page))[0]).toBe('NVDA');
+  });
+
+  test('highlights the characters that matched', async ({ page }) => {
+    await open(page);
+    await openSearch(page);
+    await type(page, 'GGL');
+    const marked = await page.$$eval('#search-results li:first-child mark', (nodes) =>
+      nodes.map((n) => n.textContent).join(''),
+    );
+    expect(marked).toBe('GGL');
   });
 });

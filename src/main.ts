@@ -27,6 +27,7 @@ import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
 import { createToolbarOverflow } from './ui/toolbarOverflow.js';
+import { searchSymbols, type MatchRange } from './app/symbolSearch.js';
 import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
@@ -270,6 +271,27 @@ let indicatorSpecs: readonly IndicatorSpec[] = [];
  * them under that would move every drawing onto whichever symbol you switched to.
  */
 let chartSymbol = symbol;
+/**
+ * Tickers loaded this session, most recent first.
+ *
+ * Search uses it to break ties, so the symbols you actually work with float up. Capped
+ * because it is a tiebreaker and not a history: a long tail contributes nothing to
+ * ranking and would only slow every keystroke.
+ *
+ * Declared HERE rather than beside the search dialog it serves: boot calls
+ * `switchSymbol`, which records a symbol, so a `let` further down the file is in its
+ * temporal dead zone at that moment. That aborts module evaluation and silently unbinds
+ * every listener registered below it — the same shape as the boot crash that motivated
+ * `tests/visual/harness.ts`.
+ */
+let recentSymbols: string[] = [];
+const RECENT_LIMIT = 8;
+
+function rememberSymbol(name: string): void {
+  const upper = name.trim().toUpperCase();
+  if (upper === '') return;
+  recentSymbols = [upper, ...recentSymbols.filter((s) => s !== upper)].slice(0, RECENT_LIMIT);
+}
 let chart: Chart | null = null;
 /** The ACTIVE pane's undo stack; swapped in and out by adoptActive/stashActive. */
 let history: History = createHistory();
@@ -825,6 +847,7 @@ function syncToggles(): void {
 }
 
 function switchSymbol(next: string): void {
+  rememberSymbol(next);
   symbol = next;
   loaded = loadSymbol(next);
   bars = loaded.bars;
@@ -1379,20 +1402,62 @@ interface Candidate {
   readonly symbol: string;
   readonly label: string;
   readonly source: string;
+  readonly symbolRanges: readonly MatchRange[];
+  readonly labelRanges: readonly MatchRange[];
 }
 
 function candidates(query: string): Candidate[] {
   const q = query.trim().toUpperCase();
-  const local = SYMBOLS.filter(
-    (s) => q === '' || s.symbol.includes(q) || s.label.toUpperCase().includes(q),
-  ).map((s) => ({ symbol: s.symbol, label: s.label, source: s.source === 'synthetic' ? 'demo' : 'bundled' }));
+  const local = searchSymbols(query, SYMBOLS, { recents: recentSymbols }).map((hit) => ({
+    symbol: hit.item.symbol,
+    label: hit.item.label,
+    source: hit.item.source === 'synthetic' ? 'demo' : 'bundled',
+    symbolRanges: hit.symbolRanges,
+    labelRanges: hit.labelRanges,
+  }));
 
   // An unmatched query is still offered, because the ticker box can fetch it when the
   // page has network. Offering it and failing loudly beats pretending it does not exist.
   if (q !== '' && !local.some((c) => c.symbol === q)) {
-    local.push({ symbol: q, label: 'Fetch from Alpha Vantage', source: 'live' });
+    local.push({
+      symbol: q,
+      label: 'Fetch from Alpha Vantage',
+      source: 'live',
+      symbolRanges: [],
+      labelRanges: [],
+    });
   }
   return local;
+}
+
+/** Escapes text destined for `innerHTML`. */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Escapes `text` and wraps the matched ranges in `<mark>`.
+ *
+ * Escaping happens per SEGMENT rather than up front, because escaping first shifts every
+ * index (`&` becomes five characters) and the ranges would then point at the wrong
+ * places. This also closes a real hole: the "fetch from the network" row carries the raw
+ * query as its ticker, so a query containing markup used to be written straight into
+ * `innerHTML`.
+ */
+function highlight(text: string, ranges: readonly MatchRange[]): string {
+  if (ranges.length === 0) return escapeHtml(text);
+  let out = '';
+  let at = 0;
+  for (const [start, end] of ranges) {
+    if (start > at) out += escapeHtml(text.slice(at, start));
+    out += `<mark>${escapeHtml(text.slice(start, end))}</mark>`;
+    at = end;
+  }
+  return out + escapeHtml(text.slice(at));
 }
 
 function renderSearch(): void {
@@ -1402,9 +1467,11 @@ function renderSearch(): void {
   searchResults.innerHTML = list
     .map(
       (c, i) =>
-        `<li role="option" aria-selected="${String(i === searchIndex)}" data-symbol="${c.symbol}">` +
-        `<span class="tk">${c.symbol}</span><span class="nm">${c.label}</span>` +
-        `<span class="src">${c.source}</span></li>`,
+        `<li role="option" aria-selected="${String(i === searchIndex)}" ` +
+        `data-symbol="${escapeHtml(c.symbol)}">` +
+        `<span class="tk">${highlight(c.symbol, c.symbolRanges)}</span>` +
+        `<span class="nm">${highlight(c.label, c.labelRanges)}</span>` +
+        `<span class="src">${escapeHtml(c.source)}</span></li>`,
     )
     .join('');
   const note = el('#search-note');

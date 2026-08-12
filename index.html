@@ -462,6 +462,17 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      /* Matched characters. The default UA `mark` is a yellow block that fights the
+         palette, so it becomes weight and colour instead of a highlight slab. */
+      #search-results mark {
+        background: none;
+        color: var(--accent);
+        font-weight: 700;
+      }
+      #search-results li[aria-selected='true'] mark {
+        color: inherit;
+        text-decoration: underline;
+      }
       #search-results .src {
         font-size: 11px;
         color: var(--text-dim);

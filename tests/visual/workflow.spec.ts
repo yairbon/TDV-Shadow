@@ -15,6 +15,7 @@
 
 import type { Page } from '@playwright/test';
 import { expect, test } from './harness.js';
+import { clickControl, selectControl } from './controls.js';
 
 interface Integrity {
   readonly painted: number;
@@ -180,7 +181,7 @@ test.describe('long sessions', () => {
     await page.selectOption('#chart-type', 'renko');
     await page.waitForTimeout(300);
 
-    await page.click('#scale-log');
+    await clickControl(page, '#scale-log');
     await page.waitForTimeout(300);
     await expectHealthy(page, 'renko + log');
 
@@ -227,7 +228,7 @@ test.describe('long sessions', () => {
 
   test('a four-pane session survives switching everything', async ({ page }) => {
     await open(page);
-    await page.selectOption('#layout-pick', '4');
+    await selectControl(page, '#layout-pick', '4');
     await page.waitForTimeout(800);
 
     const clickPane = async (index: number): Promise<void> => {
@@ -250,11 +251,11 @@ test.describe('long sessions', () => {
     await clickPane(0);
     await page.selectOption('#chart-type', 'heikin-ashi');
     await page.waitForTimeout(300);
-    await page.click('#theme-toggle');
+    await clickControl(page, '#theme-toggle');
     await page.waitForTimeout(700);
     await expectHealthy(page, 'after theme toggle');
 
-    await page.selectOption('#layout-pick', '1');
+    await selectControl(page, '#layout-pick', '1');
     await page.waitForTimeout(600);
     await expectHealthy(page, 'back to one pane');
     expect(await page.locator('#panes .pane').count()).toBe(1);

@@ -169,6 +169,24 @@ Three more from the same pass, each of which only shows up on screen:
   ("2 drawin"), at every window narrower than about 1650px. The bar scrolls horizontally
   and the status is its last item; it is stuck to the scrollport's right edge now.
 
+## Tier 2 — in progress
+
+- **Toolbar overflow.** The bar held more than fits a 1440px window, so five controls sat
+  past the right edge; reachable by scrolling, but nothing said so. Controls now move into
+  an overflow panel — moved, not mirrored, so there is one widget per piece of state.
+- **Ranked symbol search.** The matcher was a substring filter in declaration order, so
+  `APL` found nothing and `A` returned eight symbols arbitrarily ordered. Now tiered —
+  exact ticker, ticker prefix by coverage, label word start, substring, then subsequence
+  over the ticker only — with recents breaking ties and match ranges for highlighting.
+  Deliberately no fuzzy matching over LABELS: with two-to-four-word labels, subsequence
+  matching makes everything match everything and the ranking stops meaning anything.
+- **Fixed while wiring it:** the results list built `innerHTML` from the raw query, and
+  the "fetch from the network" row carries that query verbatim — so a query containing
+  markup was written straight into the page.
+
+Still open in Tier 2: the object tree, compare/overlay a second symbol, multiple price
+scales with resizable panes, and named layouts.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

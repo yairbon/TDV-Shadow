@@ -108,7 +108,27 @@ export function createToolbarOverflow(
     if (event.key === 'Escape' && !panel.hidden) setOpen(false);
   };
 
+  /**
+   * Closes the panel once a control in it has been used.
+   *
+   * Without this the panel stays open over the top-right of the plot, where it swallows
+   * the next click on the chart — a right-click on the price gutter landed on the panel
+   * instead of opening the gutter's context menu.
+   *
+   * Buttons and selects close it; text inputs do not, because the ticker box lives in
+   * here and closing the panel the moment it is focused would make it unusable.
+   */
+  const onPanelActivate = (event: Event): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.closest('input, textarea') !== null) return;
+    if (event.type === 'click' && target.closest('button') === null) return;
+    setOpen(false);
+  };
+
   button.addEventListener('click', onButton);
+  panel.addEventListener('click', onPanelActivate);
+  panel.addEventListener('change', onPanelActivate);
   document.addEventListener('pointerdown', onDocument);
   document.addEventListener('keydown', onKey);
 
@@ -125,6 +145,8 @@ export function createToolbarOverflow(
     dispose(): void {
       observer.disconnect();
       button.removeEventListener('click', onButton);
+      panel.removeEventListener('click', onPanelActivate);
+      panel.removeEventListener('change', onPanelActivate);
       document.removeEventListener('pointerdown', onDocument);
       document.removeEventListener('keydown', onKey);
     },

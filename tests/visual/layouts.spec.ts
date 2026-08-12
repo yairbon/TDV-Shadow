@@ -9,6 +9,7 @@
 
 import type { Page } from '@playwright/test';
 import { expect, test } from './harness.js';
+import { clickControl, selectControl } from './controls.js';
 
 /**
  * Clears the workspace BEFORE the app boots, rather than after navigating.
@@ -39,7 +40,7 @@ async function open(page: Page): Promise<void> {
 }
 
 async function setLayout(page: Page, layout: string): Promise<void> {
-  await page.selectOption('#layout-pick', layout);
+  await selectControl(page, '#layout-pick', layout);
   await page.waitForTimeout(600);
 }
 
@@ -609,7 +610,7 @@ test.describe('multi-chart layouts', () => {
 
     const before = [await background(0), await background(1)];
     expect(before[0]).not.toBe('');
-    await page.click('#theme-toggle');
+    await clickControl(page, '#theme-toggle');
     await page.waitForTimeout(700);
     const after = [await background(0), await background(1)];
 
