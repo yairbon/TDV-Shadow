@@ -39,6 +39,7 @@ export const DRAWING_KINDS = [
   'parallel-channel',
   'price-range',
   'date-range',
+  'date-price-range',
 ] as const;
 
 export type DrawingKind = (typeof DRAWING_KINDS)[number];

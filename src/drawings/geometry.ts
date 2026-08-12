@@ -138,6 +138,12 @@ function boxThrough(a: Point, b: Point): NonNullable<DrawingGeometry['box']> {
   };
 }
 
+/**
+ * Half a line at the renderer's 11px annotation font: the vertical offset that stacks two
+ * rows of text around a point instead of printing them on top of each other.
+ */
+const HALF_LINE = 8;
+
 /** Centre of a box — where a measurement annotation belongs. */
 function centreOf(box: NonNullable<DrawingGeometry['box']>): Point {
   return { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
@@ -376,50 +382,45 @@ export function buildGeometry(
       };
     }
 
-    case 'price-range': {
+    /*
+     * The three measurement boxes. Same box, same anchors, different readout — one case
+     * rather than three near-identical copies, leaving only "which rows of text" per kind.
+     *
+     * The annotations sit at the centre of the box: the measurement IS the output. The
+     * renderer starts label text slightly right of `x`, which is as close to centred as
+     * geometry can get — it has no font metrics.
+     */
+    case 'price-range':
+    case 'date-range':
+    case 'date-price-range': {
       const box = boxThrough(p0, p1);
-      return {
-        ...base,
-        segments: [],
-        levels: [],
-        points,
-        // One annotation, at the centre of the box: the tool is a measurement, and the
-        // measurement is the whole output. The renderer draws label text starting slightly
-        // right of `x`, which is as close to centred as it can get without measuring text
-        // here — geometry has no font metrics.
-        labels: [
-          {
-            ...centreOf(box),
-            text: priceMoveLabel(
-              drawing.anchors[0].price,
-              drawing.anchors[1].price,
-              numberParam(drawing, 'precision', 2),
-            ),
-          },
-        ],
-        box,
-      };
-    }
-
-    case 'date-range': {
-      const box = boxThrough(p0, p1);
-      return {
-        ...base,
-        segments: [],
-        levels: [],
-        points,
-        labels: [
-          {
-            ...centreOf(box),
-            text: barSpanLabel(
-              drawing.anchors[0].barIndex,
-              drawing.anchors[1].barIndex,
-              numberParam(drawing, 'barMs', 0),
-            ),
-          },
-        ],
-        box,
-      };
+      const centre = centreOf(box);
+      const priceRow = (y: number): Point & { readonly text: string } => ({
+        x: centre.x,
+        y,
+        text: priceMoveLabel(
+          drawing.anchors[0].price,
+          drawing.anchors[1].price,
+          numberParam(drawing, 'precision', 2),
+        ),
+      });
+      const spanRow = (y: number): Point & { readonly text: string } => ({
+        x: centre.x,
+        y,
+        text: barSpanLabel(
+          drawing.anchors[0].barIndex,
+          drawing.anchors[1].barIndex,
+          numberParam(drawing, 'barMs', 0),
+        ),
+      });
+      const labels =
+        drawing.kind === 'price-range'
+          ? [priceRow(centre.y)]
+          : drawing.kind === 'date-range'
+            ? [spanRow(centre.y)]
+            : // Stacked half a line apart, or the combined tool's two rows overprint.
+              [priceRow(centre.y - HALF_LINE), spanRow(centre.y + HALF_LINE)];
+      return { ...base, segments: [], levels: [], points, labels, box };
     }
 
     case 'parallel-channel': {

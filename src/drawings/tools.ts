@@ -79,6 +79,11 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
    * rather than an invented duration.
    */
   'date-range': define('date-range', 'Date Range', 2, { barMs: 0 }),
+  // Both measurements over one box, so it takes both tools' params.
+  'date-price-range': define('date-price-range', 'Date and Price Range', 2, {
+    precision: 2,
+    barMs: 0,
+  }),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */
