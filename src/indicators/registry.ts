@@ -7,6 +7,7 @@ import { cciIndicator } from './cci.js';
 import { obvIndicator } from './obv.js';
 import { smaIndicator } from './sma.js';
 import { volumeIndicator, volumeProfileIndicator } from './volume.js';
+import { williamsRIndicator } from './williamsR.js';
 import type { IndicatorDefinition, IndicatorId, IndicatorParams, IndicatorResult } from './types.js';
 
 const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.freeze({
@@ -23,6 +24,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   'volume-profile': volumeProfileIndicator,
   obv: obvIndicator,
   cci: cciIndicator,
+  'williams-r': williamsRIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {

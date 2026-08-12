@@ -26,7 +26,8 @@ export type IndicatorId =
   | 'volume'
   | 'volume-profile'
   | 'obv'
-  | 'cci';
+  | 'cci'
+  | 'williams-r';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
