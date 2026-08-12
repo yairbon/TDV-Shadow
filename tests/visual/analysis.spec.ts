@@ -410,3 +410,149 @@ test.describe('price alerts', () => {
     expect(restored[0].price).toBeCloseTo(created.price, 6);
   });
 });
+
+// ------------------------------------------------------------------ 9.3 replay
+
+const replayAt = (page: Page): Promise<number | null> =>
+  page.evaluate(() => {
+    const chart = (window as { __chart?: { replayAt: () => number | null } }).__chart;
+    return chart?.replayAt() ?? null;
+  });
+
+/** How many bars the renderer actually considered visible in the last frame. */
+const lastVisible = (page: Page): Promise<{ from: number; to: number }> =>
+  page.evaluate(() => {
+    const fn = (window as { __chartGeometry?: () => unknown }).__chartGeometry;
+    const g = fn === undefined ? null : (fn() as { visible?: { from: number; to: number } } | null);
+    return g?.visible ?? { from: 0, to: 0 };
+  });
+
+const barCount = (page: Page): Promise<number> =>
+  page.evaluate(() => {
+    const chart = (window as { __chart?: { series: { get: () => { bars: readonly unknown[] } } } })
+      .__chart;
+    return chart?.series.get().bars.length ?? 0;
+  });
+
+test.describe('replay', () => {
+  test('R enters replay and shows the transport', async ({ page }) => {
+    await open(page);
+    expect(await replayAt(page)).toBeNull();
+    await page.keyboard.press('r');
+    await page.waitForTimeout(300);
+
+    expect(await replayAt(page)).not.toBeNull();
+    expect(await page.locator('#replay').isVisible()).toBe(true);
+  });
+
+  test('replay truncates the rendered series without touching the store', async ({ page }) => {
+    await open(page);
+    const total = await barCount(page);
+    await page.keyboard.press('r');
+    await page.waitForTimeout(400);
+
+    const cursor = await replayAt(page);
+    expect(cursor).not.toBeNull();
+    // Nothing past the cursor is drawn...
+    expect((await lastVisible(page)).to).toBeLessThanOrEqual(cursor ?? 0);
+    // ...and nothing was deleted: the store is append-only.
+    expect(await barCount(page)).toBe(total);
+  });
+
+  test('stepping forward advances exactly one bar', async ({ page }) => {
+    await open(page);
+    await page.keyboard.press('r');
+    await page.waitForTimeout(300);
+    const before = await replayAt(page);
+
+    await page.click('#replay-forward');
+    await page.waitForTimeout(250);
+    expect(await replayAt(page)).toBe((before ?? 0) + 1);
+
+    await page.click('#replay-back');
+    await page.waitForTimeout(250);
+    expect(await replayAt(page)).toBe(before);
+  });
+
+  test('play advances on its own and pause stops it', async ({ page }) => {
+    await open(page);
+    await page.keyboard.press('r');
+    await page.waitForTimeout(300);
+    const start = await replayAt(page);
+
+    await page.selectOption('#replay-speed', '5');
+    await page.click('#replay-play');
+    await page.waitForTimeout(900);
+    expect(await replayAt(page)).toBeGreaterThan(start ?? 0);
+
+    // The cursor is read AFTER pausing, not before: a timer tick landing between the read
+    // and the click would make a correctly-paused replay look like it kept running.
+    await page.click('#replay-play');
+    await page.waitForTimeout(150);
+    const paused = await replayAt(page);
+    await page.waitForTimeout(700);
+    expect(await replayAt(page)).toBe(paused);
+  });
+
+  test('the scrubber sets the cursor directly', async ({ page }) => {
+    await open(page);
+    await page.keyboard.press('r');
+    await page.waitForTimeout(300);
+    await page.fill('#replay-scrub', '30');
+    await page.dispatchEvent('#replay-scrub', 'input');
+    await page.waitForTimeout(300);
+    expect(await replayAt(page)).toBe(30);
+    expect((await lastVisible(page)).to).toBeLessThanOrEqual(30);
+  });
+
+  test('leaving replay restores the whole series', async ({ page }) => {
+    await open(page);
+    const total = await barCount(page);
+    await page.keyboard.press('r');
+    await page.waitForTimeout(300);
+    await page.click('#replay-exit');
+    await page.waitForTimeout(400);
+
+    expect(await replayAt(page)).toBeNull();
+    expect(await page.locator('#replay').isVisible()).toBe(false);
+    expect((await lastVisible(page)).to).toBe(total - 1);
+  });
+
+  test('indicators do not leak the future past the cursor', async ({ page }) => {
+    // The reason truncation happens at the snapshot rather than per layer: an indicator
+    // computed over the full series would produce values for bars that "have not
+    // happened". indicatorValuesAt clamps to the last bar it knows about, so under replay
+    // a request past the cursor must come back with the CURSOR's value.
+    await open(page);
+    await page.evaluate(() => {
+      const api = (window as { __tdv?: { addIndicator: (i: string) => unknown } }).__tdv;
+      api?.addIndicator('sma');
+    });
+    await page.waitForTimeout(300);
+
+    const read = (index: number): Promise<number> =>
+      page.evaluate((i) => {
+        const chart = (window as {
+          __chart?: {
+            indicatorValuesAt: (n: number) => readonly { values: readonly { value: number }[] }[];
+          };
+        }).__chart;
+        return chart?.indicatorValuesAt(i)[0]?.values[0]?.value ?? Number.NaN;
+      }, index);
+
+    await page.keyboard.press('r');
+    await page.waitForTimeout(400);
+    const cursor = (await replayAt(page)) ?? 0;
+    expect(cursor).toBeGreaterThan(10);
+
+    const atCursor = await read(cursor);
+    expect(Number.isFinite(atCursor)).toBe(true);
+    expect(await read(cursor + 20)).toBe(atCursor);
+
+    // Guards the guard: outside replay the same two indices give different values, so
+    // the equality above is truncation and not a coincidence of a flat series.
+    await page.click('#replay-exit');
+    await page.waitForTimeout(400);
+    expect(await read(cursor + 20)).not.toBe(atCursor);
+  });
+});

@@ -9,6 +9,7 @@
 
 import { createSeriesStore, type SeriesStore } from '../data/store/seriesStore.js';
 import { createSnapshotSource, type SnapshotSource } from '../data/store/snapshot.js';
+import type { Snapshot } from '../data/types.js';
 import { createViewStore, type ViewStore } from '../data/store/viewStore.js';
 import {
   asBarIndex,
@@ -165,6 +166,15 @@ export interface Chart {
   settings(): ChartSettings;
   updateSettings(patch: Partial<ChartSettings>): void;
   /**
+   * Replay (9.3): renders the series as it stood at `index`, or live when null.
+   *
+   * A VIEW truncation, never a data mutation — the store stays append-only and the bars
+   * beyond the cursor are still there, which is what makes stepping forward free and
+   * leaving replay instant.
+   */
+  setReplayAt(index: number | null): void;
+  replayAt(): number | null;
+  /**
    * The measurement ruler (9.1). Anchors are in DATA space like every drawing, so a
    * measurement taken then zoomed still spans the same bars and the same prices.
    */
@@ -236,6 +246,9 @@ export function createChart(o: ChartOptions): Chart {
   let priceZoom = 1;
   let priceInverted = false;
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
+  let replayIndex: number | null = null;
+  /** Memo for the truncated snapshot; slicing 100k bars every frame is not free. */
+  let replayCache: { key: string; snapshot: Snapshot } | null = null;
 
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
@@ -501,9 +514,34 @@ export function createChart(o: ChartOptions): Chart {
   };
 
   // --- the single draw entrypoint ----------------------------------------
+  /**
+   * The snapshot the renderer sees: the live one, or a prefix of it during replay.
+   *
+   * Truncating here rather than at each layer means autoscale, the visible range, the
+   * indicators and the drawings all agree about where the series ends — an indicator that
+   * kept computing past the replay cursor would leak the future into the past.
+   */
+  const visibleSnapshot = (): Snapshot => {
+    const base = snapshots.snapshot();
+    const index = replayIndex;
+    if (index === null) return base;
+
+    const end = Math.max(0, Math.min(base.series.bars.length - 1, Math.round(index)));
+    const key = `${String(base.revision)}:${String(end)}`;
+    const hit = replayCache;
+    if (hit !== null && hit.key === key) return hit.snapshot;
+
+    const snapshot: Snapshot = Object.freeze({
+      ...base,
+      series: Object.freeze({ ...base.series, bars: base.series.bars.slice(0, end + 1) }),
+    });
+    replayCache = { key, snapshot };
+    return snapshot;
+  };
+
   const frame = (mask: DirtyMask): void => {
     let input = buildFrameInput({
-      snapshot: snapshots.snapshot(),
+      snapshot: visibleSnapshot(),
       layout,
       theme,
       pricePrecision,
@@ -749,6 +787,15 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     priceInverted: () => priceInverted,
+    setReplayAt(index) {
+      const next = index === null ? null : Math.max(0, Math.round(index));
+      if (next === replayIndex) return;
+      replayIndex = next;
+      // All, not Series: autoscale, the axes and every overlay depend on where the
+      // series now ends.
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    replayAt: () => replayIndex,
     setMeasure(next) {
       measure = next;
       scheduler.invalidate(DirtyFlags.Crosshair);

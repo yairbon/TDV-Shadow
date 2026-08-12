@@ -177,6 +177,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     status();
   });
   if (alertsJson !== '') chart.alerts.loadJSON(alertsJson);
+  renderReplayBar();
   chart.alerts.subscribe(() => {
     alertsJson = currentChart()?.alerts.toJSON() ?? alertsJson;
     status();
@@ -1395,7 +1396,16 @@ function scaleEntries(active: Chart): MenuEntry[] {
   ];
 }
 
-function plotMenu(active: Chart, y: number): MenuEntry[] {
+/** The bar under a plot-relative x, for "start replay here". */
+function replayIndexAt(x: number): number | undefined {
+  const active = currentChart();
+  if (active === null) return undefined;
+  const index = Math.round(active.pickAnchor(x, active.layout().plot.top + 10, 'off').anchor.barIndex);
+  const count = active.series.get().bars.length;
+  return index >= 0 && index < count ? index : undefined;
+}
+
+function plotMenu(active: Chart, y: number, x: number): MenuEntry[] {
   const shapes = active.drawings.list().length;
   const indicators = active.listIndicators().length;
   return [
@@ -1404,6 +1414,13 @@ function plotMenu(active: Chart, y: number): MenuEntry[] {
       label: 'Add alert here',
       onSelect: () => {
         addAlertAt(y);
+      },
+    },
+    {
+      label: active.replayAt() === null ? 'Start replay here' : 'Leave replay',
+      onSelect: () => {
+        if (active.replayAt() === null) enterReplay(replayIndexAt(x));
+        else exitReplay();
       },
     },
     { label: 'Chart settings', onSelect: openChartSettings },
@@ -1497,8 +1514,132 @@ container.addEventListener('contextmenu', (event) => {
         ]
       : axis === 'time'
         ? timeAxisMenu(active)
-        : plotMenu(active, point.y);
+        : plotMenu(active, point.y, point.x);
   menu.open(event.clientX, event.clientY, entries);
+});
+
+// ---------------------------------------------------------------- replay
+
+/**
+ * Replay (9.3).
+ *
+ * Truncation, not mutation: the chart renders a prefix of the series and the bars beyond
+ * the cursor are still in the store, so stepping forward is free and leaving replay is
+ * instant. This module only owns the transport — the cursor itself lives on the chart.
+ */
+const REPLAY_STEP_MS = 700;
+let replayTimer: number | null = null;
+let replaySpeed = 1;
+
+function replayBarCount(): number {
+  return currentChart()?.series.get().bars.length ?? 0;
+}
+
+function renderReplayBar(): void {
+  const bar = el('#replay');
+  const active = currentChart();
+  const at = active?.replayAt() ?? null;
+  if (bar === null) return;
+  bar.hidden = at === null || active === null;
+  if (at === null || active === null) return;
+
+  const count = replayBarCount();
+  const scrub = inp('#replay-scrub');
+  if (scrub !== null) {
+    scrub.max = String(Math.max(0, count - 1));
+    scrub.value = String(at);
+  }
+  const label = el('#replay-at');
+  if (label !== null) {
+    const bars = active.series.get().bars;
+    const stamp =
+      at < bars.length ? new Date(bars[at].t).toISOString().slice(0, 16).replace('T', ' ') : '';
+    label.textContent = `${stamp} · ${String(at + 1)}/${String(count)}`;
+  }
+  const play = btn('#replay-play');
+  if (play !== null) {
+    play.textContent = replayTimer === null ? '▶' : '❚❚';
+    play.title = replayTimer === null ? 'Play' : 'Pause';
+  }
+}
+
+function stopReplayTimer(): void {
+  if (replayTimer !== null) window.clearInterval(replayTimer);
+  replayTimer = null;
+}
+
+function stepReplay(delta: number): void {
+  const active = currentChart();
+  const at = active?.replayAt() ?? null;
+  if (active === null || at === null) return;
+  const next = at + delta;
+  if (next >= replayBarCount() - 1) {
+    // Reaching the end pauses rather than looping: a replay that silently restarts looks
+    // exactly like one that never advanced.
+    active.setReplayAt(replayBarCount() - 1);
+    stopReplayTimer();
+  } else {
+    active.setReplayAt(Math.max(0, next));
+  }
+  renderReplayBar();
+  status();
+}
+
+function enterReplay(index?: number): void {
+  const active = currentChart();
+  if (active === null) return;
+  const count = replayBarCount();
+  if (count < 2) return;
+  active.setReplayAt(index ?? Math.floor(count * 0.6));
+  renderReplayBar();
+  status();
+}
+
+function exitReplay(): void {
+  stopReplayTimer();
+  currentChart()?.setReplayAt(null);
+  renderReplayBar();
+  status();
+}
+
+el('#replay-exit')?.addEventListener('click', exitReplay);
+el('#replay-back')?.addEventListener('click', () => {
+  stopReplayTimer();
+  stepReplay(-1);
+});
+el('#replay-forward')?.addEventListener('click', () => {
+  stopReplayTimer();
+  stepReplay(1);
+});
+el('#replay-play')?.addEventListener('click', () => {
+  if (replayTimer !== null) {
+    stopReplayTimer();
+  } else {
+    replayTimer = window.setInterval(() => {
+      stepReplay(1);
+    }, REPLAY_STEP_MS / replaySpeed);
+  }
+  renderReplayBar();
+});
+sel('#replay-speed')?.addEventListener('change', (event) => {
+  const target = event.currentTarget;
+  replaySpeed = target instanceof HTMLSelectElement ? Number(target.value) : 1;
+  // Restart the timer so a speed change takes effect immediately rather than after the
+  // current interval, which at 1x is most of a second of apparent non-response.
+  if (replayTimer !== null) {
+    stopReplayTimer();
+    replayTimer = window.setInterval(() => {
+      stepReplay(1);
+    }, REPLAY_STEP_MS / replaySpeed);
+  }
+  renderReplayBar();
+});
+inp('#replay-scrub')?.addEventListener('input', (event) => {
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLInputElement)) return;
+  stopReplayTimer();
+  currentChart()?.setReplayAt(Number(target.value));
+  renderReplayBar();
 });
 
 // ---------------------------------------------------------------- alerts
@@ -1709,6 +1850,11 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key === 'Home') {
     active?.scrollToRealtime();
+    return;
+  }
+  if (event.key.toLowerCase() === 'r' && !meta && !event.altKey) {
+    if (active?.replayAt() === null) enterReplay();
+    else exitReplay();
     return;
   }
   if (event.altKey) {
