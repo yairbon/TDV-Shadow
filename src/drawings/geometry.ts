@@ -21,7 +21,7 @@ import {
   type Anchor,
   type Drawing,
 } from './types.js';
-import { TOOL_DEFINITIONS } from './tools.js';
+import { DEFAULT_STYLE, TOOL_DEFINITIONS } from './tools.js';
 
 export interface PriceProjector {
   y(price: number): number;
@@ -348,4 +348,104 @@ export function buildGeometry(
         box: null,
       };
   }
+}
+
+/**
+ * Id every in-progress preview carries.
+ *
+ * Deliberately not a store id: nothing in the store can ever collide with it, so a
+ * preview geometry can never be selected, hit-tested, undone or saved by id.
+ */
+export const PREVIEW_ID = '__preview__';
+
+/**
+ * The shape as it WOULD be if the user clicked at `cursor` right now.
+ *
+ * Placing a two-anchor drawing used to give zero feedback: the first anchor lived in a
+ * `pending` array the renderer never saw, and `buildGeometry` answers a short anchor list
+ * with `empty()` — no segments, no points, nothing to paint. This is the other path: the
+ * anchor list is treated as `[...placed, cursor]`, padded with repeats of `cursor` when the
+ * tool wants more, so a half-placed pitchfork previews as a degenerate-but-valid shape
+ * instead of drawing nothing.
+ *
+ * The per-kind maths is NOT duplicated here — this delegates to `buildGeometry`, so a ray
+ * still extends to the plot edge and a fib still computes its levels in price space while
+ * being dragged out. Two things are then overridden:
+ *
+ *   `complete: false` — always, so a preview can never be mistaken for a real drawing.
+ *   `points` — exactly `[...placed, cursor]`, WITHOUT the padding repeats. The renderer's
+ *   contract is that the last point is the floating cursor anchor and everything before it
+ *   is pinned; padding copies would otherwise pile pinned-looking handles on the cursor.
+ *   With `placed` empty that leaves a single point — the armed-but-unclicked marker.
+ */
+export function buildPreviewGeometry(
+  kind: Drawing['kind'],
+  placed: readonly Anchor[],
+  cursor: Anchor,
+  price: PriceProjector,
+  time: TimeProjector,
+  plot: PlotBox,
+): DrawingGeometry {
+  const visible: readonly Anchor[] = [...placed, cursor];
+  const anchors = [...visible];
+  const needed = TOOL_DEFINITIONS[kind].anchorCount;
+  while (anchors.length < needed) anchors.push(cursor);
+
+  const provisional: Drawing = {
+    id: PREVIEW_ID,
+    kind,
+    anchors,
+    style: DEFAULT_STYLE,
+    locked: false,
+    visible: true,
+    params: TOOL_DEFINITIONS[kind].defaults,
+    magnetTargets: [],
+  };
+
+  return {
+    ...buildGeometry(provisional, price, time, plot),
+    complete: false,
+    points: visible.map((anchor) => projectAnchor(anchor, price, time)),
+  };
+}
+
+const QUARTER_TURN = Math.PI / 4;
+const DIAGONAL = Math.SQRT1_2;
+
+/**
+ * Unit vectors for the eight 45° directions, indexed by `round(angle / 45°)`.
+ *
+ * A table rather than `cos`/`sin` of the snapped angle: `Math.cos(Math.PI / 2)` is 6.1e-17,
+ * not 0, so a vertical constraint computed trigonometrically drifts sideways.
+ */
+const OCTANTS: readonly Point[] = Object.freeze([
+  { x: 1, y: 0 },
+  { x: DIAGONAL, y: DIAGONAL },
+  { x: 0, y: 1 },
+  { x: -DIAGONAL, y: DIAGONAL },
+  { x: -1, y: 0 },
+  { x: -DIAGONAL, y: -DIAGONAL },
+  { x: 0, y: -1 },
+  { x: DIAGONAL, y: -DIAGONAL },
+]);
+
+/**
+ * Snaps the `from -> to` vector to the nearest 45°, preserving its length.
+ *
+ * PIXEL space, and that is the whole point: an angle is a property of what the user sees.
+ * Snapping the equivalent data-space vector would give a different visual angle at every
+ * zoom level and every price range, so the "45° line" would stop looking like 45° the
+ * moment anyone scrolled.
+ */
+export function constrainToAngle(from: Point, to: Point): Point {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return to;
+
+  // atan2 is (-pi, pi], so the rounded octant is -4..4; the double modulo folds -4 onto 4
+  // and every negative index onto its positive equivalent.
+  const octant = ((Math.round(Math.atan2(dy, dx) / QUARTER_TURN) % 8) + 8) % 8;
+  const direction = OCTANTS[octant];
+  return { x: from.x + direction.x * length, y: from.y + direction.y * length };
 }
