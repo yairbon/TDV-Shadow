@@ -4,6 +4,7 @@ import type { Bar } from '../data/types.js';
 import { atrIndicator, bollingerIndicator, macdIndicator, rsiIndicator, stochasticIndicator } from './oscillators.js';
 import { emaIndicator, vwapIndicator, wmaIndicator } from './movingAverages.js';
 import { cciIndicator } from './cci.js';
+import { donchianIndicator } from './donchian.js';
 import { obvIndicator } from './obv.js';
 import { smaIndicator } from './sma.js';
 import { volumeIndicator, volumeProfileIndicator } from './volume.js';
@@ -25,6 +26,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   obv: obvIndicator,
   cci: cciIndicator,
   'williams-r': williamsRIndicator,
+  donchian: donchianIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {
