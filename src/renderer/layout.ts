@@ -262,6 +262,46 @@ export function computeLayout(o: LayoutOptions): Layout {
   });
 }
 
+export interface PaneDivider {
+  /** Index into the stacked panes BELOW the plot: 0 is the first divider under the plot. */
+  readonly index: number;
+  /** Y of the divider line, CSS px. */
+  readonly y: number;
+}
+
+/**
+ * The panes below the plot, top to bottom — the same order `paneFractions` indexes,
+ * except after a pane was dropped for lack of room (see `LayoutOptions.paneFractions`).
+ */
+function stackedRects(layout: Layout): Rect[] {
+  return layout.volume === null ? [...layout.panes] : [layout.volume, ...layout.panes];
+}
+
+/** The divider within `tolerance` px of `y`, or null. */
+export function dividerAt(
+  layout: Layout,
+  y: number,
+  tolerance = DIVIDER_TOLERANCE,
+): PaneDivider | null {
+  const stack = stackedRects(layout);
+  const reach = Math.max(0, tolerance);
+  let found: PaneDivider | null = null;
+  let best = Number.POSITIVE_INFINITY;
+  let above: Rect = layout.plot;
+  for (let i = 0; i < stack.length; i++) {
+    const pane = stack[i];
+    // The line sits mid-gap, so a divider is equidistant from the two panes it splits.
+    const line = (rectBottom(above) + pane.top) / 2;
+    const distance = Math.abs(y - line);
+    if (distance <= reach && distance < best) {
+      best = distance;
+      found = Object.freeze({ index: i, y: line });
+    }
+    above = pane;
+  }
+  return found;
+}
+
 /** Convenience wrapper: densities come from the theme, `showVolume` from the app. */
 export function layoutFromTheme(
   width: number,

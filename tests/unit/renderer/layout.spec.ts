@@ -6,6 +6,8 @@ import {
   rectBottom,
   rectContains,
   rectRight,
+  dividerAt,
+  DIVIDER_TOLERANCE,
   PANE_MAX_FRACTION,
   PANE_MIN_HEIGHT,
   type Layout,
@@ -260,5 +262,66 @@ describe('layout — per-pane sizing', () => {
         }
       }
     }
+  });
+});
+
+/** The y each divider should report: mid-gap between a pane and whatever is above it. */
+function dividerLines(layout: Layout, gap: number): number[] {
+  let above = layout.plot;
+  const lines: number[] = [];
+  for (const pane of stackOf(layout)) {
+    lines.push(rectBottom(above) + gap / 2);
+    above = pane;
+  }
+  return lines;
+}
+
+describe('layout — dividerAt', () => {
+  const threePane: LayoutOptions = { ...base, extraPanes: 2 };
+
+  it('finds every divider, mid-gap, top to bottom', () => {
+    const layout = computeLayout(threePane);
+    const lines = dividerLines(layout, 6);
+    expect(lines).toEqual([262, 383, 481]);
+    lines.forEach((line, index) => {
+      expect(dividerAt(layout, line)).toEqual({ index, y: line });
+    });
+  });
+
+  it('reaches exactly `tolerance` px and no further', () => {
+    const layout = computeLayout(threePane);
+    const line = dividerLines(layout, 6)[1];
+    for (const offset of [-DIVIDER_TOLERANCE, DIVIDER_TOLERANCE]) {
+      expect(dividerAt(layout, line + offset)).toEqual({ index: 1, y: line });
+    }
+    for (const offset of [-DIVIDER_TOLERANCE - 0.01, DIVIDER_TOLERANCE + 0.01]) {
+      expect(dividerAt(layout, line + offset)).toBeNull();
+    }
+    expect(dividerAt(layout, line, 0)).toEqual({ index: 1, y: line });
+    expect(dividerAt(layout, line + 1, 0)).toBeNull();
+    // A wider grab radius reaches further, and still reports the divider it caught.
+    const last = dividerLines(layout, 6)[2];
+    expect(dividerAt(layout, last - 11)).toBeNull();
+    expect(dividerAt(layout, last - 11, 20)).toEqual({ index: 2, y: last });
+  });
+
+  it('returns null inside a pane, in the gutters, and when nothing is stacked', () => {
+    const layout = computeLayout(threePane);
+    for (const y of [0, 120, 320, 430, 540, rectBottom(layout.content) + 10]) {
+      expect(dividerAt(layout, y)).toBeNull();
+    }
+    const bare = computeLayout({ ...base, volumePaneFraction: 0 });
+    expect(stackOf(bare)).toHaveLength(0);
+    for (const y of [0, 100, 300, 576]) expect(dividerAt(bare, y)).toBeNull();
+  });
+
+  it('picks the nearer divider when two are within tolerance', () => {
+    const layout = computeLayout({ ...base, extraPanes: 1, paneFractions: [0.01, 0.01] });
+    const [first, second] = dividerLines(layout, 6);
+    expect(second - first).toBe(PANE_MIN_HEIGHT + 6);
+    expect(dividerAt(layout, first + 12, 20)).toEqual({ index: 0, y: first });
+    expect(dividerAt(layout, first + 18, 20)).toEqual({ index: 1, y: second });
+    // Dead centre between the two: the upper one wins, deterministically.
+    expect(dividerAt(layout, (first + second) / 2, 20)).toEqual({ index: 0, y: first });
   });
 });
