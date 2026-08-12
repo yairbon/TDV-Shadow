@@ -33,6 +33,8 @@ import { MIN_BAR_SPACING } from './renderer/scale/timeScale.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
 import { computeIndicator, INDICATOR_IDS } from './indicators/registry.js';
+import type { IndicatorId, IndicatorParams } from './indicators/types.js';
+import type { PlotStyles } from './renderer/layers/annotationsLayer.js';
 import { TOOL_DEFINITIONS } from './drawings/tools.js';
 import type { DrawingKind, MagnetMode } from './drawings/types.js';
 
@@ -92,6 +94,13 @@ const panesHost: HTMLElement = panesHostEl;
  * others, makes the pane under the pointer active first — so by the time the selection,
  * measure or menu handlers run, "the active chart" is the one being pointed at.
  */
+/** An indicator as it is remembered across a chart rebuild. */
+interface IndicatorSpec {
+  readonly id: IndicatorId;
+  readonly params: IndicatorParams;
+  readonly styles: PlotStyles;
+}
+
 interface Pane {
   readonly index: number;
   readonly host: HTMLElement;
@@ -103,6 +112,23 @@ interface Pane {
   scaleMode: PriceScaleMode;
   inverted: boolean;
   alertsJson: string;
+  /**
+   * Serialised drawings, keyed by the SYMBOL they were drawn on.
+   *
+   * Drawings belong to the instrument, so switching symbol files the outgoing set away
+   * and loads the incoming one. `alertsJson` beside this has always behaved that way —
+   * `AlertStore` keys by symbol — which is why alerts survived a symbol change while the
+   * drawings sitting next to them were destroyed.
+   */
+  drawingsBySymbol: Map<string, string>;
+  /**
+   * Indicators, which belong to the CHART and therefore do NOT follow the symbol.
+   *
+   * Kept as plain specs rather than live handles because every rebuild — symbol, theme,
+   * renderer — throws the chart away, and an SMA has to come back on the other side of
+   * that. Recomputed against the new bars, which is exactly what "per chart" means.
+   */
+  indicatorSpecs: readonly IndicatorSpec[];
   /**
    * Undo is per pane, because the state it restores is.
    *
@@ -224,14 +250,57 @@ let chartSettings: ChartSettingsForm = saved?.chartSettings ?? defaultChartSetti
  * the store on every change and reloaded into each new chart.
  */
 let alertsJson: string = savedPane?.alerts ?? '';
+/**
+ * The ACTIVE pane's per-symbol drawings; swapped by stashActive/adoptActive.
+ *
+ * Deliberately EMPTY at init even when a workspace was loaded. `restorePane` applies the
+ * saved annotations to the chart, and `adoptSavedAnnotations` then reads them back off
+ * it — seeding here as well made `build()` and `restorePane` each add every saved
+ * indicator, so a reload doubled them.
+ */
+let drawingsBySymbol = new Map<string, string>();
+/** The ACTIVE pane's indicators, as specs that survive a rebuild. */
+let indicatorSpecs: readonly IndicatorSpec[] = [];
+/**
+ * The symbol the live `chart` was BUILT with.
+ *
+ * `switchSymbol` updates `symbol` before rebuilding, so by the time `build()` files the
+ * outgoing chart's drawings away, `symbol` already names the incoming instrument. Filing
+ * them under that would move every drawing onto whichever symbol you switched to.
+ */
+let chartSymbol = symbol;
 let chart: Chart | null = null;
 /** The ACTIVE pane's undo stack; swapped in and out by adoptActive/stashActive. */
 let history: History = createHistory();
 const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
 
+/**
+ * Files the live chart's annotations away before it is thrown out.
+ *
+ * `build()` disposes and recreates, and it runs on a symbol change, a theme toggle and a
+ * renderer toggle alike — so without this every one of those silently deleted the
+ * drawings and indicators on screen. Capturing here rather than in `switchSymbol` is
+ * deliberate: it puts the save on the same path as the destruction, so a rebuild added
+ * later cannot forget to do it.
+ */
+function captureAnnotations(): void {
+  const live = chart;
+  if (live === null) return;
+  if (live.drawings.list().length > 0) drawingsBySymbol.set(chartSymbol, live.drawings.toJSON());
+  // Deleting the last drawing on a symbol has to clear the entry, or the set comes back
+  // from the dead on the next visit.
+  else drawingsBySymbol.delete(chartSymbol);
+  indicatorSpecs = live.listIndicators().map((i) => ({
+    id: i.id,
+    params: i.params,
+    styles: i.styles,
+  }));
+}
+
 function build(scrollPosition?: number, barSpacing?: number): void {
   const pane = activePane();
+  captureAnnotations();
   chart?.dispose();
   pane.host.replaceChildren();
   chart = createChart({
@@ -248,6 +317,13 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   });
   window.__chartGeometry = () => chart?.geometry() ?? null;
   window.__chart = chart;
+  chartSymbol = symbol;
+  // The two halves of the ownership split, in one place. Drawings come back only for the
+  // symbol now on screen; indicators come back unconditionally and recompute against
+  // whatever bars this chart was built with.
+  const saved = drawingsBySymbol.get(symbol);
+  if (saved !== undefined) chart.drawings.loadJSON(saved);
+  for (const spec of indicatorSpecs) chart.addIndicator(spec.id, spec.params, spec.styles);
   // Fit the series to the pane on load. A fixed default spacing leaves 100 daily bars
   // hugging the right edge of a wide screen with dead space beside them, which is the
   // first thing that reads as unfinished.
@@ -322,6 +398,10 @@ function stashActive(): void {
   pane.inverted = inverted;
   pane.alertsJson = alertsJson;
   pane.history = history;
+  // Capture before the swap: the outgoing pane's live drawings are still on its chart.
+  captureAnnotations();
+  pane.drawingsBySymbol = drawingsBySymbol;
+  pane.indicatorSpecs = indicatorSpecs;
 }
 
 function adoptActive(): void {
@@ -335,6 +415,9 @@ function adoptActive(): void {
   inverted = pane.inverted;
   alertsJson = pane.alertsJson;
   history = pane.history;
+  drawingsBySymbol = pane.drawingsBySymbol;
+  indicatorSpecs = pane.indicatorSpecs;
+  chartSymbol = pane.symbol;
   window.__chartGeometry = () => chart?.geometry() ?? null;
   if (chart === null) delete window.__chart;
   else window.__chart = chart;
@@ -406,7 +489,11 @@ function setActivePane(index: number): void {
  */
 function restorePane(target: Chart, state: PaneState): void {
   for (const entry of state.indicators) target.addIndicator(entry.id, entry.params, entry.styles);
-  if (state.drawings !== null) target.drawings.loadJSON(state.drawings);
+  // Only this pane's CURRENT symbol paints; the other symbols' sets ride along in the
+  // pane record and reappear when the user switches to them.
+  if (state.symbol in state.drawingsBySymbol) {
+    target.drawings.loadJSON(state.drawingsBySymbol[state.symbol]);
+  }
   if (state.alerts !== null) target.alerts.loadJSON(state.alerts);
   if (state.priceScaleMode !== 'linear') target.view.setPriceScaleMode(state.priceScaleMode);
   if (state.priceScaleInverted) target.setPriceInverted(true);
@@ -459,6 +546,8 @@ function newPane(index: number): Pane {
     tf: initial.timeframe,
     bars: initial.bars,
     chart: null,
+    drawingsBySymbol: new Map(),
+    indicatorSpecs: [],
     scaleMode: 'linear',
     inverted: false,
     alertsJson: '',
@@ -1139,12 +1228,35 @@ if (rail !== null) {
 
 // ---------------------------------------------------------------- placement
 
-function setStatus(text: string): void {
+/**
+ * A message that holds the status line for a while, instead of being wiped instantly.
+ *
+ * `status()` runs on a 1-second interval to keep the counters honest, and it used to
+ * overwrite whatever `setStatus` had just written. So "loading GOOG…" and "no API key"
+ * both appeared for under a second: loading an unlisted ticker looked like the button did
+ * nothing at all, when in fact it was reporting a perfectly clear refusal.
+ */
+let stickyUntil = 0;
+
+/** Writes the line. No policy — `status()` and `setStatus` both go through here. */
+function writeStatus(text: string): void {
   const element = el('#status');
   if (element !== null) element.textContent = text;
 }
 
+/**
+ * A transient message that holds the line against the ticking counters.
+ *
+ * Separate from `writeStatus` because `status()` writes too: if the routine refresh also
+ * armed the hold, the first tick would pin the line forever.
+ */
+function setStatus(text: string, holdMs = 6000): void {
+  writeStatus(text);
+  stickyUntil = performance.now() + holdMs;
+}
+
 function status(): void {
+  if (performance.now() < stickyUntil) return;
   const indicators = chart?.listIndicators().length ?? 0;
   const shapes = chart?.drawings.list().length ?? 0;
   const armed = chart?.alerts.forSymbol(symbol).filter((a) => !a.triggered).length ?? 0;
@@ -1155,7 +1267,7 @@ function status(): void {
     : activeTool === ''
       ? ''
       : ` · ${activeTool}`;
-  setStatus(
+  writeStatus(
     `${String(indicators)} indicator${indicators === 1 ? '' : 's'} · ${String(shapes)} drawing${
       shapes === 1 ? '' : 's'
     }${armed === 0 ? '' : ` · ${String(armed)} alert${armed === 1 ? '' : 's'}`}${
@@ -1210,6 +1322,7 @@ const booted = currentChart();
 if (restoring && savedPane !== null && booted !== null) {
   restoring = false;
   restorePane(booted, savedPane);
+  adoptSavedAnnotations(savedPane);
   const picker = sel('#chart-type');
   if (picker !== null) picker.value = savedPane.chartType;
   renderLegend(null);
@@ -1231,7 +1344,10 @@ if (saved !== null && saved.layout !== '1') {
     setActivePane(pane.index);
     if (state.symbol !== symbol) switchSymbol(state.symbol);
     const target = currentChart();
-    if (target !== null) restorePane(target, state);
+    if (target !== null) {
+      restorePane(target, state);
+      adoptSavedAnnotations(state);
+    }
   }
   setActivePane(0);
 }
@@ -1442,6 +1558,37 @@ window.setInterval(() => {
 let saveTimer: number | null = null;
 
 /** One description of what a saved workspace IS, so the two save paths cannot drift. */
+/**
+ * A pane's whole per-symbol drawing map, with the live chart folded in.
+ *
+ * The map on the record is only as fresh as the last rebuild, and the chart on screen has
+ * moved on since — so the symbol being displayed is read from the chart itself, and the
+ * symbols NOT displayed come from the record. Saving only the live chart would drop every
+ * other symbol's drawings on the next autosave, which is the bug this map exists to fix,
+ * reintroduced one layer down.
+ */
+function drawingMapOf(pane: Pane, isActive: boolean, target: Chart): Record<string, string> {
+  const map = new Map(isActive ? drawingsBySymbol : pane.drawingsBySymbol);
+  const shown = isActive ? chartSymbol : pane.symbol;
+  if (target.drawings.list().length > 0) map.set(shown, target.drawings.toJSON());
+  else map.delete(shown);
+  return Object.fromEntries(map);
+}
+
+/**
+ * Takes the annotations a saved pane just restored into the module state.
+ *
+ * Two halves. The symbols NOT on screen come straight from the payload — nothing on the
+ * chart knows about them. The symbol that IS on screen is read back off the chart by
+ * `captureAnnotations`, so the live indicator handles and the saved specs cannot drift
+ * apart. Runs after `restorePane`, never before: it is reading the result of it.
+ */
+function adoptSavedAnnotations(state: PaneState): void {
+  drawingsBySymbol = new Map(Object.entries(state.drawingsBySymbol));
+  captureAnnotations();
+  stashActive();
+}
+
 function paneStateOf(pane: Pane): PaneState | null {
   // The active pane's live state lives in the module variables, not in its record.
   const isActive = pane.index === activeIndex;
@@ -1459,7 +1606,7 @@ function paneStateOf(pane: Pane): PaneState | null {
       params: i.params,
       styles: i.styles,
     })),
-    drawings: target.drawings.list().length > 0 ? target.drawings.toJSON() : null,
+    drawingsBySymbol: drawingMapOf(pane, isActive, target),
     alerts: target.alerts.list().length > 0 ? target.alerts.toJSON() : null,
     barSpacing: view.barSpacing,
     scrollPosition: view.scrollPosition,

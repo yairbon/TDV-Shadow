@@ -19,11 +19,18 @@ import type { PlotStyles, PlotStyleOverride } from '../renderer/layers/annotatio
 
 const KEY = 'tdv-shadow.workspace';
 /**
- * Bumped to 2 when the schema became per-pane (10.4). A version-1 payload described one
- * chart and is discarded rather than half-migrated — the loader's contract is that a
- * payload it cannot fully understand is not applied at all.
+ * Bumped to 2 when the schema became per-pane (10.4), and to 3 when drawings became
+ * per-SYMBOL rather than per-pane.
+ *
+ * A version-1 payload described one chart and is still discarded — the loader's contract
+ * is that a payload it cannot fully understand is not applied at all. Version 2 IS fully
+ * understood, though: its single `drawings` blob is exactly the set that was on screen
+ * for that pane's saved symbol, so it migrates cleanly by filing it under that symbol.
+ * Discarding it instead would delete the user's drawings on upgrade, which is the very
+ * failure this schema change exists to stop.
  */
-const VERSION = 2;
+const VERSION = 3;
+const OLDEST_MIGRATABLE = 2;
 
 /** Everything one pane remembers. Panes are independent charts, so this is per pane. */
 export interface PaneState {
@@ -38,8 +45,18 @@ export interface PaneState {
     readonly params: IndicatorParams;
     readonly styles: PlotStyles;
   }[];
-  /** Serialised drawing store, or null when there are none. */
-  readonly drawings: string | null;
+  /**
+   * Serialised drawing stores, keyed by the SYMBOL they were drawn on.
+   *
+   * TradingView's model, and the one this app now follows: a drawing belongs to the
+   * instrument, not to the chart that happens to be showing it. Switch AAPL → MSFT and
+   * the AAPL drawings are put away, not deleted; switch back and they return. Before
+   * this the pane held one blob, so a symbol change destroyed it outright.
+   *
+   * Indicators are deliberately NOT keyed this way — see `indicators` above. They belong
+   * to the chart and follow it across a symbol change, which is also TradingView's model.
+   */
+  readonly drawingsBySymbol: Readonly<Record<string, string>>;
   /** Serialised alert store (9.2), or null when there are none. */
   readonly alerts: string | null;
   readonly barSpacing: number;
@@ -172,7 +189,8 @@ export function loadWorkspace(): Workspace | null {
   if (typeof parsed !== 'object' || parsed === null) return null;
 
   const record = parsed as Record<string, unknown>;
-  if (record['version'] !== VERSION) return null;
+  const version = record['version'];
+  if (typeof version !== 'number' || version < OLDEST_MIGRATABLE || version > VERSION) return null;
   const rawPanes = record['panes'];
   if (!Array.isArray(rawPanes)) return null;
 
@@ -191,6 +209,35 @@ export function loadWorkspace(): Workspace | null {
     renderer: renderer === 'webgl' ? 'webgl' : 'canvas2d',
     chartSettings: readChartSettings(record['chartSettings']),
   };
+}
+
+/**
+ * The per-symbol drawing map, migrating a version-2 pane on the way.
+ *
+ * v2 stored one `drawings` string per pane. That blob was whatever was on screen, and a
+ * pane also records the symbol it was showing — so the blob belongs to that symbol and
+ * nothing is guessed by filing it there. A v2 pane whose symbol is missing has nowhere to
+ * file its drawings and drops them, which is the only lossy path and is unreachable in
+ * practice because `readPane` already rejects a pane without a string symbol.
+ */
+function readDrawingsBySymbol(record: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+
+  const modern = record['drawingsBySymbol'];
+  if (typeof modern === 'object' && modern !== null) {
+    for (const [symbol, json] of Object.entries(modern as Record<string, unknown>)) {
+      if (typeof json === 'string' && symbol !== '') out[symbol] = json;
+    }
+  }
+
+  // v2 migration. Never overwrites a v3 entry: if both shapes are somehow present the
+  // newer one is the truth.
+  const legacy = record['drawings'];
+  const symbol = record['symbol'];
+  if (typeof legacy === 'string' && typeof symbol === 'string' && !(symbol in out)) {
+    out[symbol] = legacy;
+  }
+  return out;
 }
 
 /** One pane, validated field by field. Returns null when it cannot be trusted. */
@@ -225,7 +272,7 @@ function readPane(value: unknown): PaneState | null {
         },
       ];
     }),
-    drawings: typeof record['drawings'] === 'string' ? record['drawings'] : null,
+    drawingsBySymbol: readDrawingsBySymbol(record),
     // Validated by the alert store's own loadJSON, which drops bad entries field by
     // field; storing it as a string keeps one owner for that schema.
     alerts: typeof record['alerts'] === 'string' ? record['alerts'] : null,
