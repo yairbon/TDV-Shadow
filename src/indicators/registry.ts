@@ -6,6 +6,7 @@ import { emaIndicator, vwapIndicator, wmaIndicator } from './movingAverages.js';
 import { adxIndicator } from './adx.js';
 import { cciIndicator } from './cci.js';
 import { donchianIndicator } from './donchian.js';
+import { ichimokuIndicator } from './ichimoku.js';
 import { keltnerIndicator } from './keltner.js';
 import { obvIndicator } from './obv.js';
 import { psarIndicator } from './psar.js';
@@ -35,6 +36,7 @@ const INDICATORS: Readonly<Record<IndicatorId, IndicatorDefinition>> = Object.fr
   adx: adxIndicator,
   supertrend: supertrendIndicator,
   psar: psarIndicator,
+  ichimoku: ichimokuIndicator,
 });
 
 export function getIndicator(id: IndicatorId): IndicatorDefinition {

@@ -32,7 +32,8 @@ export type IndicatorId =
   | 'keltner'
   | 'adx'
   | 'supertrend'
-  | 'psar';
+  | 'psar'
+  | 'ichimoku';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
@@ -98,6 +99,10 @@ export interface IndicatorParams {
   /** Parabolic SAR: acceleration increment and its cap. */
   readonly step?: number;
   readonly maxStep?: number;
+  /** Ichimoku: the three window lengths. The cloud displacement follows `kijunPeriod`. */
+  readonly tenkanPeriod?: number;
+  readonly kijunPeriod?: number;
+  readonly senkouBPeriod?: number;
   readonly source?: 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4';
   /** Volume Profile: number of price buckets and the value-area share (default 70). */
   readonly buckets?: number;
