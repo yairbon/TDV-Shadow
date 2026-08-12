@@ -50,6 +50,7 @@ export interface ChartState {
     readonly count: number;
     readonly last: number;
     readonly mean: number;
+    readonly median: number;
     readonly p95: number;
     readonly max: number;
   };

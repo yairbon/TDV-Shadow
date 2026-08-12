@@ -230,6 +230,19 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     status();
   });
 
+  installControl();
+  renderLegend(null);
+}
+
+/**
+ * (Re)points `window.__tdv` at the active pane.
+ *
+ * The context carries the symbol and timeframe by value, so it has to be reinstalled
+ * whenever those change — including on a pane switch, where nothing is rebuilt. Without
+ * that, `getState()` kept reporting the symbol of whichever pane was built last while the
+ * chart it returned was a different one.
+ */
+function installControl(): void {
   installControlApi(() => chart, {
     symbol,
     timeframe: tf,
@@ -238,7 +251,6 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     },
     available: SYMBOLS.map((s) => s.symbol),
   });
-  renderLegend(null);
 }
 
 // ---------------------------------------------------------------- pane management
@@ -276,6 +288,7 @@ function adoptActive(): void {
   window.__chartGeometry = () => chart?.geometry() ?? null;
   if (chart === null) delete window.__chart;
   else window.__chart = chart;
+  if (chart !== null) installControl();
 }
 
 function markActive(): void {
@@ -581,6 +594,7 @@ function switchSymbol(next: string): void {
   tf = loaded.timeframe;
   setLive(false);
   build();
+  installControl();
   syncSymbolChrome();
   syncTimeframes();
   renderLegend(null);

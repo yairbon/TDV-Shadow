@@ -137,6 +137,8 @@ export interface FrameStats {
   readonly count: number;
   readonly last: number;
   readonly mean: number;
+  /** p50. The typical frame — robust to the odd GC pause the mean is not. */
+  readonly median: number;
   readonly p95: number;
   readonly max: number;
 }
@@ -1061,7 +1063,7 @@ export function createChart(o: ChartOptions): Chart {
     geometry,
     frameStats() {
       const n = Math.min(frameTimeCount, frameTimes.length);
-      if (n === 0) return { count: 0, last: 0, mean: 0, p95: 0, max: 0 };
+      if (n === 0) return { count: 0, last: 0, mean: 0, median: 0, p95: 0, max: 0 };
       const sorted = Array.from(frameTimes.subarray(0, n)).sort((a, b) => a - b);
       let total = 0;
       for (const value of sorted) total += value;
@@ -1069,6 +1071,7 @@ export function createChart(o: ChartOptions): Chart {
         count: n,
         last: frameTimes[(frameTimeCount - 1) % frameTimes.length],
         mean: total / n,
+        median: sorted[Math.floor(n / 2)],
         p95: sorted[Math.min(n - 1, Math.floor(n * 0.95))],
         max: sorted[n - 1],
       };

@@ -228,6 +228,31 @@ test.describe('multi-chart layouts', () => {
     expect(inkOnOther).toBeGreaterThan(50);
   });
 
+  test('the control API reports the ACTIVE pane, not the last one built', async ({ page }) => {
+    // getState() carries the symbol by value, so it has to be reinstalled on a pane
+    // switch as well as on a rebuild. Without that it named whichever pane was built
+    // last while returning a chart that was a different one.
+    await open(page);
+    await setLayout(page, '2h');
+    await clickPane(page, 1);
+    await page.selectOption('#symbol-pick', 'AAPL');
+    await page.waitForTimeout(600);
+    expect(
+      await page.evaluate(() => {
+        const api = (window as { __tdv?: { getState: () => { symbol: string } } }).__tdv;
+        return api?.getState().symbol ?? '';
+      }),
+    ).toBe('AAPL');
+
+    await clickPane(page, 0);
+    expect(
+      await page.evaluate(() => {
+        const api = (window as { __tdv?: { getState: () => { symbol: string } } }).__tdv;
+        return api?.getState().symbol ?? '';
+      }),
+    ).toBe('DEMO');
+  });
+
   test('the layout and each pane symbol survive a reload', async ({ page }) => {
     await open(page);
     await setLayout(page, '2h');

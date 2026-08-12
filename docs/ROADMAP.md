@@ -1,109 +1,102 @@
-# What still separates TDV-Shadow from TradingView
+# Roadmap — status
 
-Written after auditing the code rather than the screenshots. The conclusion changed the
-plan: the gap is **not** feature count.
+Written after auditing the code rather than the screenshots. The original diagnosis was
+that the gap to TradingView was **not** feature count but the absence of an interaction
+layer. Phases 7–10 closed that. This file now records what shipped, what each item cost,
+and what is deliberately still open.
 
-## Diagnosis
+## The original five findings, and where they stand
 
-We have breadth — 14 chart types, 11 indicators, 20 drawing tools, two renderers, 524
-unit tests. What we do not have is an **interaction layer**. Five facts, each verifiable
-by grep:
-
-| Finding | Evidence | Consequence |
-| --- | --- | --- |
-| `hitTest.ts` is never called by the app | zero imports outside `src/drawings/` | A drawing cannot be selected, moved, or individually deleted. 41 passing tests cover code the user can never reach. |
-| `drawings.select()` is never called | only `drawings.selected()` is read, in `bootstrap.ts:350` | The selected-state rendering branch is unreachable. Nothing can ever be highlighted. |
-| No undo stack exists | no `undo`/`redo` anywhere in `src/` | Erase is irreversible. One misclick loses the analysis. |
-| `addIndicator` is called with no params from the UI | `main.ts:451` | You can add an SMA but never change it from 20 to 50. Every indicator is stuck on defaults. |
-| No context menu, no shortcuts beyond ⌘K | one `keydown` handler, in `main.ts` | Everything requires a trip to the toolbar. |
-
-That is why it still reads as a demo. In TradingView the chart is an **object you
-manipulate**; here it is a picture you configure. Adding a twelfth indicator would not
-close that gap — being able to grab a trendline and move it would.
-
-A second, structural gap: `pointer.ts` knows only pan, zoom and pinch. There is no
-selection model, no drag state machine, no command dispatch. Every feature below needs
-that foundation, so it comes first.
+| Finding | Status |
+| --- | --- |
+| `hitTest.ts` never called by the app | **Fixed** (7.1). Wired into the pointer layer; drawings select, drag and delete. |
+| `drawings.select()` never called | **Fixed** (7.1). It also never notified subscribers, so the highlight did not repaint. |
+| No undo stack | **Fixed** (7.2). Snapshot-based, one step per edit. |
+| `addIndicator` called with no params from the UI | **Fixed** (8.1). Settings sheet derived from each indicator's own declared defaults. |
+| No context menu, no shortcuts beyond ⌘K | **Fixed** (7.3, 7.4). |
 
 ---
 
-## Phase 7 — Direct manipulation *(the one that matters)*
+## Phase 7 — Direct manipulation ✅
 
-**7.1 Selection, drag, delete.** Wire `hitTest` into the pointer layer. Click selects
-(nearest first, anchor handles win over the body); drag an anchor to reshape; drag the
-body to move the whole shape; `Delete`/`Backspace` removes the selection; `Esc` cancels
-an in-progress placement. Magnet applies while dragging, not only while placing.
-*Done when:* dragging an endpoint changes the anchor in DATA space and the pixels follow
-at any zoom and on a log scale — the same round-trip property the drawing tests already
-assert, now driven by the mouse.
+**7.1 Selection, drag, delete.** Click selects (anchor handles beat the body), drag an
+anchor to reshape, drag the body to translate, `Delete` removes, `Esc` cancels. The
+gesture runs in the capture phase and stops propagation so pan never sees it, and dragging
+works in DATA space so the anchor rule holds at any zoom and on a log scale.
 
-**7.2 Undo/redo.** A command stack over the drawing and indicator stores.
-`Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`. Commands are the only mutation path, so anything a user
-can do is reversible by construction.
-*Done when:* erase-all followed by undo restores every drawing with byte-identical
-anchors, and redo re-removes them.
+**7.2 Undo/redo.** Snapshot-based rather than inverse-command based — drawing sets are
+small, and one wrong inverse corrupts state untraceably. `capture()` runs BEFORE every
+mutation and collapses no-ops, so a drag that ends where it started does not eat a step.
 
-**7.3 Context menus.** Right-click a drawing (settings, clone, lock, remove, send to
-back), the plot (reset scales, settings, add indicator), or an axis (auto-scale, log,
-invert).
+**7.3 Context menus.** Drawing (settings, clone, lock, order, remove), plot (indicators,
+scales, fit, alerts, replay, clear), price gutter (log, invert, auto scale, alert), time
+gutter. Surfaced three store bugs: `update()` rejected every patch on a locked drawing so
+locking was one-way; `select()` did not notify; `visible: false` was ignored by the
+renderer. Also added §2.1 — an invertible price axis — which exposed the same latent bug
+in three renderers, all of which built wick rects assuming Y(high) is above Y(low).
 
-**7.4 Keyboard map.** Tool shortcuts (`Alt+T` trendline, `Alt+H` horizontal, `Alt+F`
-fib), `M` magnet, arrow keys to nudge a selection, `+`/`-` zoom, `Home` jump to latest.
+**7.4 Keyboard map.** Tools, magnet, undo/redo, delete, escape, home, replay — behind a
+guard that never steals a key from a text field.
 
-Phase 7 is the difference between a chart you look at and a chart you work in.
+## Phase 8 — Configuration surfaces ✅
 
-## Phase 8 — Configuration surfaces
+**8.1 Indicator settings.** The form is DERIVED from the definition's `defaults` and its
+declared plots, so a dialog cannot offer a field the indicator ignores. Live preview;
+Cancel and Escape both revert; one undo step per edit.
 
-**8.1 Indicator settings dialog** — double-click a legend row: period, source, stdDev,
-fast/slow/signal, plus per-plot colour and line style. Params already flow through
-`IndicatorParams`; only the UI is missing.
-**8.2 Drawing style editor** — colour, width, dash, label visibility, per drawing.
-**8.3 Chart settings** — gridlines on/off, price precision, right margin, timezone,
-session breaks, candle colours.
+**8.2 Drawing style editor.** Colour, width, dash, opacity, labels — every one of which
+already existed on `DrawingStyle` and was read by nothing. `drawDrawings` now honours them.
 
-## Phase 9 — Analysis features
+**8.3 Chart settings.** Gridlines, price decimals, right margin, timezone, candle colours,
+applied through `updateSettings` and a repaint rather than a rebuild.
 
-**9.1 Measure tool** — drag on the plot for Δprice, Δ%, bar count and elapsed time, the
-way TradingView's shift-drag ruler works.
-**9.2 Price alerts** — a draggable alert line, triggered when a bar crosses it, with a
-toast and a persisted list.
-**9.3 Replay mode** — scrub to any bar, then step or play forward at 1×/2×/5×. The store
-is append-only, so replay is a view truncation rather than a data mutation.
+## Phase 9 — Analysis ✅
 
-## Phase 10 — Scale and fidelity
+**9.1 Measure tool.** Shift-drag or the rail ruler; Δprice, Δ%, bars and elapsed time.
+Anchors in data space, painted on the crosshair layer.
 
-**10.1 Large history.** Today the app tops out at a few hundred bars. Target 100k bars
-at 60fps: level-of-detail downsampling for the series layer, a benchmark test that fails
-if a frame exceeds the 8ms budget in `skills/chart-render/SKILL.md`.
-**10.2 Session breaks and timezone** on the time axis — weekends and closed sessions
-should not consume width, and labels should honour a chosen timezone.
-**10.3 Resampling chart types into the picker.** Renko, Kagi, P&F, Line Break and Range
-are built and tested but excluded from the UI because they index their own bar space
-while the axis labels from the source series. 10.2 supplies the mapping that fixes it.
-**10.4 Multi-chart layouts** — 2×2 grid, each pane its own symbol and workspace, with
-optional crosshair sync.
+**9.2 Price alerts.** Draggable levels, checked on each tick against the bar's RANGE with
+a remembered side, so an alert fires once when the price reaches it rather than on every
+bar thereafter.
+
+**9.3 Replay mode.** A view truncation, not a data mutation: the snapshot is truncated
+once, so autoscale, the axes, the indicators and the drawings all agree about where the
+series ends.
+
+## Phase 10 — Scale and fidelity ✅
+
+**10.1 Large history.** 100k bars inside the 8ms budget. The bottleneck was not the bar
+count: the chart-type transform, every indicator and the GL upload were keyed on a
+combined series+view revision, so none of those memos ever hit while panning. §5.1 adds
+level-of-detail aggregation and lowers the zoom floor so "fit all" over 100k bars actually
+fits. `tests/visual/performance.spec.ts` asserts both work counters and wall time.
+
+**10.2 Session breaks and timezone.** Weekends already consumed no width — that is what
+index space means, and there is now a test saying so. Added: a display timezone for every
+label, DST-correct via `Intl` per instant, and session separators at day boundaries.
+
+**10.3 Resampling chart types.** Renko, Kagi, P&F, Line Break and Range are in the picker.
+They render in their own index space with timestamps resolved through `sourceIndex`, so
+there is one index space again rather than two.
+
+**10.4 Multi-chart layouts.** 1, 2×1, 1×2 and 2×2. Each pane is a full chart; the active
+pane owns the toolbar. Crosshair sync broadcasts the bar index, not the pixel.
 
 ---
 
-## Order and reasoning
-
-1. **7.1 first.** Highest leverage in the project: it converts twenty drawing tools from
-   place-once decorations into real instruments, and it activates `hitTest.ts`, which is
-   already written and tested.
-2. **7.2 immediately after**, because direct manipulation without undo is worse than no
-   direct manipulation — a stray drag silently destroys work.
-3. **8.1 next.** "Add SMA" that cannot become SMA 50 is the most obviously missing thing
-   after selection.
-4. **9.x** are recognisable TradingView features but none of them is load-bearing for
-   feel; they are additive.
-5. **10.1 before 10.4.** Four charts on screen multiplies whatever the per-frame cost
-   already is, so the performance work has to land first.
-
-## Deliberately not planned
+## Deliberately still open
 
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented
   expression DSL with a real parser, named as itself.
 - **A live symbol universe.** Search over "every ticker" needs a backend this build does
-  not have. The current search covers bundled symbols plus a live-fetch escape hatch.
+  not have. Search covers bundled symbols plus a live-fetch escape hatch.
 - **Broker/order integration.** Out of scope for a charting library.
+- **Per-pane indicators on a resampling type.** Indicators compute over whatever series is
+  being rendered, which for Renko is the brick series. That is the right answer for most
+  indicators and the wrong one for volume-weighted ones; nothing currently distinguishes
+  them.
+- **Drawings across a chart-type switch.** A drawing anchored to bar 400 of the source
+  series points at brick 400 after switching to Renko. Making annotations survive that
+  needs anchors in TIME rather than in index, which is a change to the frozen drawing
+  contract.
