@@ -45,8 +45,8 @@ describe('time scale — RENDER_ALGORITHMS §5', () => {
     }
   });
 
-  it('clamps bar spacing to [0.5, 120]', () => {
-    expect(clampBarSpacing(0.01)).toBe(MIN_BAR_SPACING);
+  it('clamps bar spacing to [0.01, 120]', () => {
+    expect(clampBarSpacing(0.0001)).toBe(MIN_BAR_SPACING);
     expect(clampBarSpacing(10_000)).toBe(MAX_BAR_SPACING);
     expect(clampBarSpacing(Number.NaN)).toBe(MIN_BAR_SPACING);
     expect(clampBarSpacing(7)).toBe(7);

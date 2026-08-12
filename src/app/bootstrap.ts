@@ -24,7 +24,7 @@ import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { makePriceRange } from '../renderer/scale/priceScale.js';
 import { computeLayout, type Layout, type Rect } from '../renderer/layout.js';
-import { candleGeometry } from '../renderer/scale/timeScale.js';
+import { candleGeometry, MIN_BAR_SPACING } from '../renderer/scale/timeScale.js';
 import { maxVolume } from '../renderer/scale/volumeScale.js';
 import { createGlSeriesLayer } from '../renderer/webgl/glSeriesLayer.js';
 import { drawDerivedSeries } from '../renderer/layers/derivedSeriesLayer.js';
@@ -101,6 +101,30 @@ export interface ChartOptions {
   /** Restores pan/zoom across a renderer swap, which has to rebuild the chart. */
   readonly scrollPosition?: number;
   readonly chartType?: ChartType;
+}
+
+/**
+ * Rolling frame-time statistics.
+ *
+ * p95 rather than the mean: the budget in skills/chart-render/SKILL.md is about dropped
+ * frames, and a mean hides exactly the tail that drops them.
+ */
+/** Counters for work that is O(series length) and therefore must be memoised. */
+export interface WorkStats {
+  /** Chart-type transforms actually run (cache misses). */
+  readonly seriesTransforms: number;
+  /** Indicator computations actually run (cache misses). */
+  readonly indicatorComputes: number;
+  /** GL instance-buffer uploads. */
+  readonly glUploads: number;
+}
+
+export interface FrameStats {
+  readonly count: number;
+  readonly last: number;
+  readonly mean: number;
+  readonly p95: number;
+  readonly max: number;
 }
 
 /** Per-candle geometry actually used for the last frame — the Phase 3 assertion hook. */
@@ -197,6 +221,17 @@ export interface Chart {
   /** Applies a live tick and schedules a repaint. Never draws. */
   pushTick(bar: Bar): void;
   geometry(): GeometryDump | null;
+  /** Rolling frame-time statistics in CSS ms — the 10.1 budget check reads these. */
+  frameStats(): FrameStats;
+  resetFrameStats(): void;
+  /**
+   * How much O(series) work has actually been done, as counters.
+   *
+   * Wall-clock alone cannot distinguish "the renderer recomputes everything each frame"
+   * from "this machine is slow"; these can. They are the deterministic half of the 10.1
+   * budget check.
+   */
+  workStats(): WorkStats;
   dispose(): void;
 }
 
@@ -250,6 +285,27 @@ export function createChart(o: ChartOptions): Chart {
   /** Memo for the truncated snapshot; slicing 100k bars every frame is not free. */
   let replayCache: { key: string; snapshot: Snapshot } | null = null;
 
+  /**
+   * Identity of the DATA a memo depends on: the bars, and how far replay has truncated
+   * them. Deliberately not `snapshot.revision`, which is a combined series+view counter
+   * and therefore changes on every pan and every zoom — keying the chart-type transform,
+   * the indicator computations and the GL instance upload on it meant none of those
+   * memos ever hit while the user was scrolling. At 100k bars that alone was ~9.5ms per
+   * frame, most of the budget, for work whose inputs had not changed.
+   */
+  let dataRev = 0;
+  let lastSeriesRev = -1;
+  let lastReplayRev: number | null = -1;
+  const dataRevision = (): number => {
+    const current = series.revision();
+    if (current !== lastSeriesRev || replayIndex !== lastReplayRev) {
+      lastSeriesRev = current;
+      lastReplayRev = replayIndex;
+      dataRev += 1;
+    }
+    return dataRev;
+  };
+
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
     height: Math.max(1, o.container.clientHeight),
@@ -258,6 +314,9 @@ export function createChart(o: ChartOptions): Chart {
   let cssSize = { width: o.container.clientWidth, height: o.container.clientHeight };
   let lastInput: FrameInput | null = null;
   let frameCount = 0;
+  /** Ring buffer of frame durations; fixed size so measuring never allocates. */
+  const frameTimes = new Float64Array(240);
+  let frameTimeCount = 0;
 
   // --- surfaces -----------------------------------------------------------
   /** Pane indicators each get their own rect; the count drives the layout. */
@@ -351,7 +410,7 @@ export function createChart(o: ChartOptions): Chart {
       barSpacing: input.timeScale.barSpacing,
       scrollPosition: input.timeScale.scrollPosition,
       theme,
-      revision: input.snapshot.revision,
+      revision: dataRevision(),
       cssWidth: surfaces.grid.cssWidth,
       cssHeight: surfaces.grid.cssHeight,
       dpr: surfaces.grid.ratio,
@@ -367,7 +426,7 @@ export function createChart(o: ChartOptions): Chart {
     if ((mask & DirtyFlags.Overlay) === 0) return;
     const ctx = surfaces.overlay.ctx;
     const bars = input.snapshot.series.bars;
-    const revision = input.snapshot.revision;
+    const revision = dataRevision();
 
     const overlayInput = {
       plot: input.layout.plot,
@@ -375,11 +434,17 @@ export function createChart(o: ChartOptions): Chart {
       from: input.visible.from,
       to: input.visible.to,
       x: (i: number) => input.timeScale.x(asBarIndex(i)),
+      // §5 as an affine pair, for the dense paths: X(i) = P.l + P.w - (k - i) * s.
+      x0:
+        input.layout.plot.left +
+        input.layout.plot.width -
+        input.timeScale.scrollPosition * input.timeScale.barSpacing,
+      dx: input.timeScale.barSpacing,
     };
     const priceScale = { y: (value: number) => input.priceScale.y(asPrice(value)) };
 
     const { overlays, panes } = splitByPlacement(features.indicators, (indicator) =>
-      indicatorMemo(indicator.handleId, revision, indicator.id, indicator.params, bars),
+      indicatorMemo.compute(indicator.handleId, revision, indicator.id, indicator.params, bars),
     );
 
     for (const { indicator, result } of overlays) {
@@ -540,6 +605,7 @@ export function createChart(o: ChartOptions): Chart {
   };
 
   const frame = (mask: DirtyMask): void => {
+    const started = performance.now();
     let input = buildFrameInput({
       snapshot: visibleSnapshot(),
       layout,
@@ -574,7 +640,7 @@ export function createChart(o: ChartOptions): Chart {
     }
     const snapshot = input.snapshot;
     const bars = snapshot.series.bars;
-    const derived = seriesMemo(snapshot.revision, features.chartType, features.chartParams, bars);
+    const derived = seriesMemo.compute(dataRevision(), features.chartType, features.chartParams, bars);
     // The built-in series layer draws candles from the raw bars. Any other chart type is
     // drawn here instead, so its Series bit is stripped exactly as the GL path does.
     const customSeries = features.chartType !== 'candles';
@@ -607,6 +673,8 @@ export function createChart(o: ChartOptions): Chart {
     if ((mask & DirtyFlags.Crosshair) !== 0) drawMeasureOverlay(input);
     lastInput = input;
     frameCount += 1;
+    frameTimes[frameTimeCount % frameTimes.length] = performance.now() - started;
+    frameTimeCount += 1;
     o.container.dispatchEvent(
       new CustomEvent('chart:rendered', { bubbles: true, detail: { frame: frameCount } }),
     );
@@ -755,9 +823,9 @@ export function createChart(o: ChartOptions): Chart {
       const bars = input.snapshot.series.bars;
       const i = Math.min(bars.length - 1, Math.max(0, Math.round(index)));
       return features.indicators.map((indicator) => {
-        const result = indicatorMemo(
+        const result = indicatorMemo.compute(
           indicator.handleId,
-          input.snapshot.revision,
+          dataRevision(),
           indicator.id,
           indicator.params,
           bars,
@@ -825,8 +893,10 @@ export function createChart(o: ChartOptions): Chart {
       const count = series.get().bars.length;
       if (count < 2) return;
       const width = layout.plot.width;
+      // Floored at the zoom limit, not at 1.5: with §5.1 aggregation a 100k-bar history
+      // genuinely fits, and clamping to 1.5 made "fit all" show the last 2% of it.
       view.update({
-        barSpacing: Math.min(120, Math.max(1.5, (width * 0.92) / count)),
+        barSpacing: Math.min(120, Math.max(MIN_BAR_SPACING, (width * 0.92) / count)),
         scrollPosition: count - 1 + rightMargin,
       });
     },
@@ -864,6 +934,29 @@ export function createChart(o: ChartOptions): Chart {
       }
     },
     geometry,
+    frameStats() {
+      const n = Math.min(frameTimeCount, frameTimes.length);
+      if (n === 0) return { count: 0, last: 0, mean: 0, p95: 0, max: 0 };
+      const sorted = Array.from(frameTimes.subarray(0, n)).sort((a, b) => a - b);
+      let total = 0;
+      for (const value of sorted) total += value;
+      return {
+        count: n,
+        last: frameTimes[(frameTimeCount - 1) % frameTimes.length],
+        mean: total / n,
+        p95: sorted[Math.min(n - 1, Math.floor(n * 0.95))],
+        max: sorted[n - 1],
+      };
+    },
+    workStats: () => ({
+      seriesTransforms: seriesMemo.misses(),
+      indicatorComputes: indicatorMemo.misses(),
+      glUploads: glLayer?.uploads() ?? 0,
+    }),
+    resetFrameStats() {
+      frameTimeCount = 0;
+      frameTimes.fill(0);
+    },
     dispose(): void {
       containerObserver?.disconnect();
       unsubscribeView();

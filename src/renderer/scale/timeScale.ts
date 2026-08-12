@@ -10,7 +10,7 @@ import { asBarIndex, asPixel, type BarIndex, type Pixel } from '../../data/types
 import type { Rect } from '../layout.js';
 
 /** §5 zoom clamps. */
-export const MIN_BAR_SPACING = 0.5;
+export const MIN_BAR_SPACING = 0.01;
 export const MAX_BAR_SPACING = 120;
 
 /** Below this spacing a body cannot be drawn without touching its neighbour (§6). */

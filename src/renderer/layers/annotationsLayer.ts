@@ -69,6 +69,15 @@ export interface OverlayInput {
   readonly from: number;
   readonly to: number;
   x(index: number): number;
+  /**
+   * The same §5 map as `x`, as the affine pair `x(i) = x0 + i * dx`.
+   *
+   * Supplied so the dense (sub-pixel) paths can compute a column with two arithmetic ops
+   * instead of an indirect call. At 100k visible bars and three indicators that call was
+   * 300k invocations per frame — measurably most of the overlay's cost.
+   */
+  readonly x0: number;
+  readonly dx: number;
 }
 
 function clip(ctx: CanvasRenderingContext2D, rect: Rect): void {
@@ -78,7 +87,16 @@ function clip(ctx: CanvasRenderingContext2D, rect: Rect): void {
   ctx.clip();
 }
 
-/** Strokes one plot, breaking the path wherever the value is NaN. */
+/**
+ * Strokes one plot, breaking the path wherever the value is NaN.
+ *
+ * Above one bar per pixel column the polyline is reduced to two points per column — the
+ * minimum and the maximum value in it, in that order (§5.1). One point per column would
+ * be faster still and would flatten every spike; keeping both preserves the envelope,
+ * which is the only thing a sub-pixel line can honestly show. At 100k visible bars this
+ * is the difference between ~2400 `lineTo` calls and 100k of them, per indicator, per
+ * frame.
+ */
 function strokePlot(
   ctx: CanvasRenderingContext2D,
   values: Float64Array,
@@ -91,19 +109,56 @@ function strokePlot(
   ctx.lineWidth = override.lineWidth ?? 1.5;
   ctx.setLineDash(override.dash === undefined ? [] : [...override.dash]);
   ctx.beginPath();
+
+  const dense = input.to - input.from + 1 > input.plot.width;
+  const x0 = input.x0;
+  const dx = input.dx;
   let drawing = false;
+  let column = Number.NaN;
+  let lo = Number.POSITIVE_INFINITY;
+  let hi = Number.NEGATIVE_INFINITY;
+
+  const flush = (): void => {
+    if (!Number.isFinite(lo)) return;
+    const x = snapLine(column);
+    // Low first, then high: the path then walks the column's full extent rather than
+    // jumping across it.
+    const yLo = snapLine(scale.y(lo));
+    const yHi = snapLine(scale.y(hi));
+    if (drawing) ctx.lineTo(x, yLo);
+    else ctx.moveTo(x, yLo);
+    ctx.lineTo(x, yHi);
+    drawing = true;
+    lo = Number.POSITIVE_INFINITY;
+    hi = Number.NEGATIVE_INFINITY;
+  };
+
   for (let i = input.from; i <= input.to; i++) {
     const value = values[i];
     if (Number.isNaN(value)) {
+      if (dense) flush();
       drawing = false;
       continue;
     }
-    const x = snapLine(input.x(i));
-    const y = snapLine(scale.y(value));
-    if (drawing) ctx.lineTo(x, y);
-    else ctx.moveTo(x, y);
-    drawing = true;
+    if (!dense) {
+      const x = snapLine(input.x(i));
+      const y = snapLine(scale.y(value));
+      if (drawing) ctx.lineTo(x, y);
+      else ctx.moveTo(x, y);
+      drawing = true;
+      continue;
+    }
+
+    const next = Math.round(x0 + i * dx);
+    if (next !== column) {
+      flush();
+      column = next;
+    }
+    if (value < lo) lo = value;
+    if (value > hi) hi = value;
   }
+  if (dense) flush();
+
   ctx.stroke();
   ctx.setLineDash([]);
 }
@@ -117,14 +172,45 @@ function fillHistogram(
   barWidth: number,
 ): void {
   const zeroY = snapFill(scale.y(0));
+  const dense = input.to - input.from + 1 > input.plot.width;
+
+  // Dense: one bar per column, taking the value furthest from zero — the extreme is what
+  // a histogram is read for, and 100k overlapping fillRects would leave whichever bar
+  // happened to be last anyway.
+  let column = Number.NaN;
+  let extreme = 0;
+
+  const flush = (): void => {
+    if (!Number.isFinite(column) || extreme === 0) return;
+    const y = snapFill(scale.y(extreme));
+    ctx.fillStyle = extreme >= 0 ? theme.upVolume : theme.downVolume;
+    ctx.fillRect(column, Math.min(y, zeroY), 1, Math.max(1, Math.abs(y - zeroY)));
+    extreme = 0;
+  };
+
   for (let i = input.from; i <= input.to; i++) {
     const value = values[i];
     if (Number.isNaN(value)) continue;
-    const y = snapFill(scale.y(value));
-    ctx.fillStyle = value >= 0 ? theme.upVolume : theme.downVolume;
-    const top = Math.min(y, zeroY);
-    ctx.fillRect(snapFill(input.x(i)) - barWidth / 2, top, Math.max(1, barWidth), Math.max(1, Math.abs(y - zeroY)));
+    if (!dense) {
+      const y = snapFill(scale.y(value));
+      ctx.fillStyle = value >= 0 ? theme.upVolume : theme.downVolume;
+      const top = Math.min(y, zeroY);
+      ctx.fillRect(
+        snapFill(input.x(i)) - barWidth / 2,
+        top,
+        Math.max(1, barWidth),
+        Math.max(1, Math.abs(y - zeroY)),
+      );
+      continue;
+    }
+    const next = Math.round(input.x0 + i * input.dx);
+    if (next !== column) {
+      flush();
+      column = next;
+    }
+    if (Math.abs(value) > Math.abs(extreme)) extreme = value;
   }
+  if (dense) flush();
 }
 
 /** Draws an overlay indicator on the price plot. */

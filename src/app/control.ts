@@ -91,6 +91,7 @@ export function installControlApi(getChart: () => Chart | null, context: Control
       })),
       drawings: drawingHandles(),
       frameCount: dump?.frameCount ?? 0,
+      frameStats: chart.frameStats(),
     };
   };
 

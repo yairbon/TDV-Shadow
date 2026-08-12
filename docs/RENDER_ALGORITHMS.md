@@ -118,11 +118,33 @@ Zoom about an anchor pixel `xa` (cursor position), keeping the bar under the cur
 
 ```
 ia = X⁻¹(xa)                                  // before
-s' = clamp(s * z, sMin, sMax)                 // z > 1 zooms in; sMin = 0.5, sMax = 120
+s' = clamp(s * z, sMin, sMax)                 // z > 1 zooms in; sMin = 0.01, sMax = 120
 k' = ia + (P.l + P.w - xa) / s'
 ```
 
 Pan by `dx` pixels: `k' = k - dx / s'` (drag right → dx > 0 → reveals older bars).
+
+### 5.1 Level of detail (`sMin` below one pixel per bar)
+
+`sMin` is 0.01, so a 100k-bar history fits on a 1200px plot. Below **one CSS pixel per
+bar** the series layer must aggregate before drawing:
+
+```
+column(i) = round(X(i))                       // the pixel a bar lands on
+per column: o = first bar's o, c = last bar's c, h = max h, l = min l, v = sum v
+```
+
+That is a resampled bar, so a column is a real OHLC bar for a wider period.
+
+Two properties this must have, and both are asserted in tests:
+- Buckets are formed by **pixel column**, not by a fixed bar stride. A fixed stride makes
+  bucket boundaries drift against the pixel grid while panning, and the series shimmers.
+- The aggregate **must** be taken. Drawing every bar into the same column is not merely
+  slow: the later bar paints over the earlier one, so the column shows the LAST bar in it
+  rather than the range of all of them, and every spike disappears.
+
+`X(i)` is affine and therefore monotone in `i`, so the aggregation is one pass with no
+sorting.
 
 ## 6. Candle body width (no-overlap invariant)
 

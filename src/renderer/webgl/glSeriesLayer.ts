@@ -13,6 +13,7 @@
 import type { Bar, PriceScaleMode } from '../../data/types.js';
 import type { Rect } from '../layout.js';
 import type { Theme } from '../theme.js';
+import { aggregateByColumn, shouldAggregate, type LodColumn } from '../scale/lod.js';
 import { candleGeometry } from '../scale/timeScale.js';
 import { MIN_LOG_PRICE } from '../scale/priceScale.js';
 import {
@@ -51,6 +52,8 @@ export interface GlFrame {
 }
 
 export interface GlSeriesLayer {
+  /** Instance-buffer uploads so far. A pan must not cause one outside the LOD path. */
+  uploads(): number;
   draw(frame: GlFrame): void;
   dispose(): void;
 }
@@ -127,6 +130,27 @@ export function parseColor(css: string): [number, number, number, number] {
   ];
 }
 
+/**
+ * Packs aggregated columns (§5.1) for the LOD path.
+ *
+ * `index` is the column's FIRST bar, and the shader derives x from it with the same §5
+ * map the CPU used to bucket, so a column lands in the pixel it was bucketed into.
+ */
+export function packColumns(columns: readonly LodColumn[]): Float32Array {
+  const data = new Float32Array(columns.length * STRIDE);
+  for (let i = 0; i < columns.length; i++) {
+    const column = columns[i];
+    const o = i * STRIDE;
+    data[o] = column.index;
+    data[o + 1] = column.o;
+    data[o + 2] = column.h;
+    data[o + 3] = column.l;
+    data[o + 4] = column.c;
+    data[o + 5] = column.v;
+  }
+  return data;
+}
+
 /** Packs bars into the interleaved instance array the shader expects. */
 export function packInstances(bars: readonly Bar[]): Float32Array {
   const data = new Float32Array(bars.length * STRIDE);
@@ -193,6 +217,7 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
   };
 
   let uploadedRevision = Number.NaN;
+  let uploads = 0;
   let uploadedCount = -1;
 
   const bindInstanceAttribs = (offsetBars: number): void => {
@@ -224,20 +249,53 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    const count = frame.to - frame.from + 1;
-    if (count <= 0 || frame.bars.length === 0) return;
+    const visible = frame.to - frame.from + 1;
+    if (visible <= 0 || frame.bars.length === 0) return;
 
     gl.useProgram(program);
     gl.bindVertexArray(vao);
 
-    if (frame.revision !== uploadedRevision || frame.bars.length !== uploadedCount) {
+    // §5.1: below one pixel per bar the GPU has the same problem the CPU path does —
+    // several bars land in one column and the last one drawn wins, hiding every spike.
+    // Aggregating on the CPU and uploading ~1200 columns is far cheaper than uploading
+    // 100k instances, so the LOD path re-uploads per frame and the full path does not.
+    const columns = shouldAggregate(frame.barSpacing, visible)
+      ? aggregateByColumn(
+          frame.bars,
+          frame.from,
+          frame.to,
+          frame.plot.left + frame.plot.width - frame.scrollPosition * frame.barSpacing,
+          frame.barSpacing,
+        )
+      : null;
+
+    // Same rule as the CPU path: a column's volume is the SUM of its bars, so the pane
+    // must be scaled by the maximum COLUMN volume, not the maximum bar volume.
+    let volumeMax = frame.volumeMax;
+    let count: number;
+    if (columns !== null) {
+      volumeMax = 0;
+      for (const column of columns) if (column.v > volumeMax) volumeMax = column.v;
       gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, packInstances(frame.bars), gl.DYNAMIC_DRAW);
-      uploadedRevision = frame.revision;
-      uploadedCount = frame.bars.length;
+      gl.bufferData(gl.ARRAY_BUFFER, packColumns(columns), gl.DYNAMIC_DRAW);
+      uploads += 1;
+      // Force a full re-upload when the view zooms back in.
+      uploadedRevision = Number.NaN;
+      uploadedCount = -1;
+      bindInstanceAttribs(0);
+      count = columns.length;
+    } else {
+      if (frame.revision !== uploadedRevision || frame.bars.length !== uploadedCount) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, packInstances(frame.bars), gl.DYNAMIC_DRAW);
+        uploads += 1;
+        uploadedRevision = frame.revision;
+        uploadedCount = frame.bars.length;
+      }
+      // WebGL2 has no baseInstance, so the visible slice is expressed as a buffer offset.
+      bindInstanceAttribs(frame.from);
+      count = visible;
     }
-    // WebGL2 has no baseInstance, so the visible slice is expressed as a buffer offset.
-    bindInstanceAttribs(frame.from);
 
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
@@ -267,7 +325,7 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
     gl.uniform1f(u.scroll, frame.scrollPosition);
     gl.uniform1f(u.priceMin, frame.priceMin);
     gl.uniform1f(u.priceMax, frame.priceMax);
-    gl.uniform1f(u.volumeMax, frame.volumeMax);
+    gl.uniform1f(u.volumeMax, volumeMax);
     gl.uniform1f(u.bodyWidth, geometry.width);
     gl.uniform1i(u.scaleMode, scaleModeFlag(frame.scaleMode));
     gl.uniform1i(u.invert, frame.inverted === true ? 1 : 0);
@@ -298,7 +356,7 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
     }
 
-    if (vol !== null && frame.volumeMax > 0) {
+    if (vol !== null && volumeMax > 0) {
       scissor(vol);
       setColors(frame.theme.upVolume, frame.theme.downVolume);
       gl.uniform1i(u.pass, PASS_VOLUME);
@@ -310,6 +368,7 @@ export function createGlSeriesLayer(canvas: HTMLCanvasElement): GlSeriesLayer {
 
   return {
     draw,
+    uploads: () => uploads,
     dispose(): void {
       gl.deleteBuffer(quadBuffer);
       gl.deleteBuffer(instanceBuffer);

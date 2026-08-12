@@ -15,6 +15,7 @@ import { asBarIndex } from '../../data/types.js';
 import type { FrameInput } from '../frame.js';
 import { rectBottom } from '../layout.js';
 import { fillSpan, snapFill } from '../pixel.js';
+import { aggregateByColumn, shouldAggregate } from '../scale/lod.js';
 import { candleGeometry } from '../scale/timeScale.js';
 import { makeVolumeScale, maxVolume } from '../scale/volumeScale.js';
 
@@ -69,16 +70,45 @@ class CandleSeriesLayer implements SeriesLayer {
 
     const candle = candleGeometry(f.timeScale.barSpacing);
     const pane = f.layout.volume;
-    const volumeScale =
-      pane === null ? null : makeVolumeScale(pane, maxVolume(bars, f.visible.from, f.visible.to));
     const volumeBottom = pane === null ? 0 : snapFill(rectBottom(pane));
 
     // --- geometry pass ------------------------------------------------------
+    // Below 1px per bar there are more bars than columns, so aggregate first (§5.1).
+    // Without this the later bar in a column simply paints over the earlier one and the
+    // chart shows the last bar per pixel instead of the range of all of them.
+    const lod = shouldAggregate(f.timeScale.barSpacing, f.visible.count)
+      ? // §5: X(i) = P.l + P.w - (k - i) * s, which is x0 + i*s with
+        // x0 = P.l + P.w - k*s. Passed as the affine pair so the inner loop has no call.
+        aggregateByColumn(
+          bars,
+          from,
+          to,
+          f.layout.plot.left + f.layout.plot.width - f.timeScale.scrollPosition * f.timeScale.barSpacing,
+          f.timeScale.barSpacing,
+        )
+      : null;
+    const last = lod === null ? to : lod.length - 1;
+    const start = lod === null ? from : 0;
+    buf.ensure(last - start + 1);
+
+    // The volume scale must be built from what is actually DRAWN. A column's volume is
+    // the SUM of its bars, so scaling by the per-bar maximum would send every aggregated
+    // column far past the top of the pane.
+    let vMax = 0;
+    if (pane !== null) {
+      if (lod === null) {
+        vMax = maxVolume(bars, f.visible.from, f.visible.to);
+      } else {
+        for (const column of lod) if (column.v > vMax) vMax = column.v;
+      }
+    }
+    const volumeScale = pane === null ? null : makeVolumeScale(pane, vMax);
+
     let count = 0;
     let upCount = 0;
     let downCount = 0;
-    for (let i = from; i <= to; i++) {
-      const bar = bars[i];
+    for (let i = start; i <= last; i++) {
+      const bar = lod === null ? bars[i] : lod[i];
       if (!f.priceScale.accepts(bar.l)) continue; // §3: p <= 0 is dropped on a log scale
 
       const yOpen: number = f.priceScale.y(bar.o);
@@ -95,7 +125,7 @@ class CandleSeriesLayer implements SeriesLayer {
       }
 
       const slot = count;
-      buf.centre[slot] = snapFill(f.timeScale.x(asBarIndex(i)));
+      buf.centre[slot] = lod === null ? snapFill(f.timeScale.x(asBarIndex(i))) : lod[i].x;
       // §7: snap both edges, then floor the span at 1 — a doji is a 1px line, never 0.
       buf.bodyTop[slot] = snapFill(yOpen < yClose ? yOpen : yClose);
       buf.bodyHeight[slot] = fillSpan(

@@ -43,23 +43,35 @@ interface SeriesCacheEntry {
   readonly series: DerivedSeries;
 }
 
-/** Memoised chart-type transform, keyed by (revision, type, params). */
-export function createSeriesMemo(): (
-  revision: number,
-  type: ChartType,
-  params: ChartTypeParams,
-  bars: readonly Bar[],
-) => DerivedSeries {
+/**
+ * Memoised chart-type transform, keyed by (revision, type, params).
+ *
+ * `misses` is exported deliberately: a memo whose key changes every frame is not a memo,
+ * and it fails silently — the chart still looks right, it is just recomputing an O(n)
+ * transform per frame. That happened (the key was the combined series+view revision), so
+ * the miss count is now a testable fact rather than something to profile for.
+ */
+export interface SeriesMemo {
+  compute(revision: number, type: ChartType, params: ChartTypeParams, bars: readonly Bar[]): DerivedSeries;
+  misses(): number;
+}
+
+export function createSeriesMemo(): SeriesMemo {
   let cache: SeriesCacheEntry | null = null;
-  return (revision, type, params, bars) => {
-    const key = JSON.stringify(params);
-    const hit = cache;
-    if (hit !== null && hit.revision === revision && hit.type === type && hit.key === key) {
-      return hit.series;
-    }
-    const series = applyChartType(type, bars, params);
-    cache = { revision, type, key, series };
-    return series;
+  let misses = 0;
+  return {
+    compute(revision, type, params, bars) {
+      const key = JSON.stringify(params);
+      const hit = cache;
+      if (hit !== null && hit.revision === revision && hit.type === type && hit.key === key) {
+        return hit.series;
+      }
+      misses += 1;
+      const series = applyChartType(type, bars, params);
+      cache = { revision, type, key, series };
+      return series;
+    },
+    misses: () => misses,
   };
 }
 
@@ -70,21 +82,31 @@ interface IndicatorCacheEntry {
 }
 
 /** Memoised indicator compute, one cache slot per handle. */
-export function createIndicatorMemo(): (
-  handleId: string,
-  revision: number,
-  id: IndicatorId,
-  params: IndicatorParams,
-  bars: readonly Bar[],
-) => IndicatorResult {
+export interface IndicatorMemo {
+  compute(
+    handleId: string,
+    revision: number,
+    id: IndicatorId,
+    params: IndicatorParams,
+    bars: readonly Bar[],
+  ): IndicatorResult;
+  misses(): number;
+}
+
+export function createIndicatorMemo(): IndicatorMemo {
   const cache = new Map<string, IndicatorCacheEntry>();
-  return (handleId, revision, id, params, bars) => {
-    const key = `${id}:${JSON.stringify(params)}`;
-    const hit = cache.get(handleId);
-    if (hit !== undefined && hit.revision === revision && hit.key === key) return hit.result;
-    const result = computeIndicator(id, bars, params);
-    cache.set(handleId, { revision, key, result });
-    return result;
+  let misses = 0;
+  return {
+    compute(handleId, revision, id, params, bars) {
+      const key = `${id}:${JSON.stringify(params)}`;
+      const hit = cache.get(handleId);
+      if (hit !== undefined && hit.revision === revision && hit.key === key) return hit.result;
+      misses += 1;
+      const result = computeIndicator(id, bars, params);
+      cache.set(handleId, { revision, key, result });
+      return result;
+    },
+    misses: () => misses,
   };
 }
 

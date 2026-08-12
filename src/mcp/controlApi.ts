@@ -41,6 +41,18 @@ export interface ChartState {
   readonly indicators: readonly IndicatorHandle[];
   readonly drawings: readonly DrawingHandle[];
   readonly frameCount: number;
+  /**
+   * Rolling frame-time statistics in CSS ms (10.1). p95 is the number the budget check
+   * reads: the SKILL.md budget is about dropped frames, and a mean hides the tail that
+   * drops them.
+   */
+  readonly frameStats: {
+    readonly count: number;
+    readonly last: number;
+    readonly mean: number;
+    readonly p95: number;
+    readonly max: number;
+  };
 }
 
 export interface IndicatorHandle {

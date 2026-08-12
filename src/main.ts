@@ -23,6 +23,7 @@ import { createDrawingDialog } from './ui/drawingDialog.js';
 import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
+import { MIN_BAR_SPACING } from './renderer/scale/timeScale.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
 import { computeIndicator, INDICATOR_IDS } from './indicators/registry.js';
@@ -164,7 +165,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   // refitting made three differently-zoomed fixtures render identically.
   if (barSpacing === undefined && params.get('spacing') === null && bars.length > 1) {
     const width = chart.layout().plot.width;
-    const fitted = Math.min(120, Math.max(1.5, (width * 0.92) / bars.length));
+    const fitted = Math.min(120, Math.max(MIN_BAR_SPACING, (width * 0.92) / bars.length));
     chart.view.update({ barSpacing: fitted, scrollPosition: bars.length - 1 + 2 });
   }
 

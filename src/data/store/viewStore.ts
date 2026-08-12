@@ -21,7 +21,7 @@ export interface ViewState {
 }
 
 /** Below this, candles collapse into sub-pixel noise; above it they read as blocks. */
-export const MIN_BAR_SPACING = 0.5;
+export const MIN_BAR_SPACING = 0.01;
 export const MAX_BAR_SPACING = 200;
 
 export const DEFAULT_VIEW: ViewState = Object.freeze<ViewState>({
