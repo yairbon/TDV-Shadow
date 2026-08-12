@@ -54,17 +54,19 @@ export function drawGridLayer(ctx: CanvasRenderingContext2D, f: FrameInput): voi
   ctx.rect(content.left, content.top, content.width, content.height);
   ctx.clip();
 
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = theme.gridLine;
-  ctx.beginPath();
-  for (const tick of ticks) {
-    if (tick.y < plot.top || tick.y > rectBottom(plot)) continue;
-    drawHorizontalRule(ctx, tick.y, plot.left, rectRight(plot));
+  if (f.showGrid) {
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.gridLine;
+    ctx.beginPath();
+    for (const tick of ticks) {
+      if (tick.y < plot.top || tick.y > rectBottom(plot)) continue;
+      drawHorizontalRule(ctx, tick.y, plot.left, rectRight(plot));
+    }
+    for (const tick of times) {
+      drawVerticalRule(ctx, tick.x, content.top, rectBottom(content));
+    }
+    ctx.stroke();
   }
-  for (const tick of times) {
-    drawVerticalRule(ctx, tick.x, content.top, rectBottom(content));
-  }
-  ctx.stroke();
   ctx.restore();
 
   // --- axis rules -----------------------------------------------------------

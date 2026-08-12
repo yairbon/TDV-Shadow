@@ -60,6 +60,16 @@ const PANE_INDICATORS: ReadonlySet<IndicatorId> = new Set<IndicatorId>([
 
 export type RendererMode = 'canvas2d' | 'webgl';
 
+/** Presentation settings that change no data and force no rebuild. */
+export interface ChartSettings {
+  readonly theme: Theme;
+  /** Decimal cap for price labels. */
+  readonly pricePrecision: number;
+  readonly showGrid: boolean;
+  /** Empty bars kept to the right of the newest one when snapped to realtime. */
+  readonly rightMargin: number;
+}
+
 export interface ChartOptions {
   readonly container: HTMLElement;
   readonly symbol: string;
@@ -134,6 +144,9 @@ export interface Chart {
   /** §2.1 price-axis inversion — high prices at the bottom. */
   setPriceInverted(on: boolean): void;
   priceInverted(): boolean;
+  /** Chart settings that used to require a full rebuild. */
+  settings(): ChartSettings;
+  updateSettings(patch: Partial<ChartSettings>): void;
   priceZoom(): number;
   resetPriceZoom(): void;
   /** True when the view has been scrolled away from the newest bar. */
@@ -163,7 +176,12 @@ const LAYOUT_CHROME = {
 } as const;
 
 export function createChart(o: ChartOptions): Chart {
-  const theme = o.theme ?? DARK_THEME;
+  // Mutable so chart settings can change colours, precision, grid and right margin
+  // without tearing the chart down. Rebuilding lost pan, zoom, selection and history.
+  let theme = o.theme ?? DARK_THEME;
+  let pricePrecision = o.pricePrecision ?? 2;
+  let showGrid = true;
+  let rightMargin = 2;
   const canvases = createChartCanvases(o.container);
 
   const series = createSeriesStore({
@@ -390,7 +408,7 @@ export function createChart(o: ChartOptions): Chart {
         input.layout.priceGutter,
         theme,
         priceScale,
-        o.pricePrecision ?? 2,
+        pricePrecision,
       );
     }
   };
@@ -401,11 +419,12 @@ export function createChart(o: ChartOptions): Chart {
       snapshot: snapshots.snapshot(),
       layout,
       theme,
-      pricePrecision: o.pricePrecision ?? 2,
+      pricePrecision,
       overlays: [],
       pointer: pointer.pointer(),
       priceRange: null,
       priceScaleInverted: priceInverted,
+      showGrid,
       autoscaleCache,
     });
 
@@ -419,11 +438,12 @@ export function createChart(o: ChartOptions): Chart {
         snapshot: input.snapshot,
         layout,
         theme,
-        pricePrecision: o.pricePrecision ?? 2,
+        pricePrecision,
         overlays: [],
         pointer: pointer.pointer(),
         priceRange: makePriceRange(centre - half, centre + half),
         priceScaleInverted: priceInverted,
+        showGrid,
         autoscaleCache,
       });
     }
@@ -623,6 +643,14 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     priceInverted: () => priceInverted,
+    settings: () => ({ theme, pricePrecision, showGrid, rightMargin }),
+    updateSettings(patch) {
+      theme = patch.theme ?? theme;
+      pricePrecision = patch.pricePrecision ?? pricePrecision;
+      showGrid = patch.showGrid ?? showGrid;
+      rightMargin = patch.rightMargin ?? rightMargin;
+      scheduler.invalidate(DirtyFlags.All);
+    },
     resetPriceZoom() {
       if (priceZoom === 1) return;
       priceZoom = 1;
@@ -633,7 +661,7 @@ export function createChart(o: ChartOptions): Chart {
       return view.get().scrollPosition < count - 1 - 0.5;
     },
     scrollToRealtime() {
-      view.setScrollPosition(series.get().bars.length - 1 + 2);
+      view.setScrollPosition(series.get().bars.length - 1 + rightMargin);
     },
     fitAll() {
       const count = series.get().bars.length;
@@ -641,7 +669,7 @@ export function createChart(o: ChartOptions): Chart {
       const width = layout.plot.width;
       view.update({
         barSpacing: Math.min(120, Math.max(1.5, (width * 0.92) / count)),
-        scrollPosition: count - 1 + 2,
+        scrollPosition: count - 1 + rightMargin,
       });
     },
     pickAnchor(x, y, magnet = 'off') {

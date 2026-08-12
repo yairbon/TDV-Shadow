@@ -20,6 +20,7 @@ import { createHistory, type HistoryState } from './app/history.js';
 import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
+import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
@@ -114,6 +115,20 @@ let scaleMode: PriceScaleMode =
   params.get('scale') === 'log' ? 'log' : (saved?.priceScaleMode ?? 'linear');
 let themeName: 'dark' | 'light' = 'dark';
 let inverted = params.get('invert') === '1' || (saved?.priceScaleInverted ?? false);
+
+/** Presentation settings. Colours are stored as chosen, not as a whole theme, so the
+ *  dark/light toggle keeps working and only the candle pair is overridden. */
+const defaultChartSettings = (base: 'dark' | 'light'): ChartSettingsForm => {
+  const theme = base === 'light' ? LIGHT_THEME : DARK_THEME;
+  return {
+    showGrid: true,
+    pricePrecision: 2,
+    rightMargin: 2,
+    upColor: theme.upBody,
+    downColor: theme.downBody,
+  };
+};
+let chartSettings: ChartSettingsForm = saved?.chartSettings ?? defaultChartSettings('dark');
 let chart: Chart | null = null;
 const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
@@ -149,6 +164,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   // Axis inversion lives on the chart instance, so it has to be re-applied whenever the
   // chart is rebuilt (theme swap, renderer swap) or it silently resets.
   if (inverted) chart.setPriceInverted(true);
+  applyChartSettings(chartSettings);
 
   installControlApi(() => chart, {
     symbol,
@@ -160,6 +176,50 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   });
   renderLegend(null);
 }
+
+// ---------------------------------------------------------------- chart settings
+
+const chartDialog = createChartDialog();
+
+/**
+ * Applies presentation settings to the live chart.
+ *
+ * The candle colours are folded into a derived theme rather than stored as one: the
+ * dark/light toggle rebuilds from its own base theme, and persisting a whole theme object
+ * would pin the user to whichever mode they were in when they picked a colour.
+ */
+function applyChartSettings(next: ChartSettingsForm): void {
+  chartSettings = next;
+  const active = currentChart();
+  if (active === null) return;
+  const base = themeName === 'light' ? LIGHT_THEME : DARK_THEME;
+  active.updateSettings({
+    showGrid: next.showGrid,
+    pricePrecision: next.pricePrecision,
+    rightMargin: next.rightMargin,
+    // Volume keeps the theme's own translucent pair. Tinting it with the candle colour
+    // looked right for a green/red palette and wrong for anything else, and volume is a
+    // separate setting in TradingView for the same reason.
+    theme: {
+      ...base,
+      upBody: next.upColor,
+      upWick: next.upColor,
+      downBody: next.downColor,
+      downWick: next.downColor,
+    },
+  });
+}
+
+function openChartSettings(): void {
+  chartDialog.open({
+    settings: chartSettings,
+    defaults: defaultChartSettings(themeName),
+    onApply: applyChartSettings,
+    onCancel: applyChartSettings,
+  });
+}
+
+el('#chart-settings')?.addEventListener('click', openChartSettings);
 
 // ---------------------------------------------------------------- legend
 
@@ -937,6 +997,7 @@ function snapshotWorkspace(active: Chart): Workspace {
     drawings: active.drawings.list().length > 0 ? active.drawings.toJSON() : null,
     barSpacing: view.barSpacing,
     scrollPosition: view.scrollPosition,
+    chartSettings,
   };
 }
 
@@ -962,8 +1023,18 @@ el('#reset-workspace')?.addEventListener('click', () => {
 // ---------------------------------------------------------------- theme
 
 el('#theme-toggle')?.addEventListener('click', () => {
+  const previous = defaultChartSettings(themeName);
   themeName = themeName === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset['theme'] = themeName;
+
+  // Candle colours follow the theme UNLESS the user picked their own. Comparing against
+  // the outgoing theme's defaults is what tells those two cases apart; skipping it would
+  // either strand dark-theme candles on a white chart or silently discard a choice.
+  const fresh = defaultChartSettings(themeName);
+  if (chartSettings.upColor === previous.upColor && chartSettings.downColor === previous.downColor) {
+    chartSettings = { ...chartSettings, upColor: fresh.upColor, downColor: fresh.downColor };
+  }
+
   const view = chart?.view.get();
   build(view?.scrollPosition, view?.barSpacing);
   persist();
@@ -1268,6 +1339,7 @@ function plotMenu(active: Chart): MenuEntry[] {
   const indicators = active.listIndicators().length;
   return [
     { label: 'Add indicator', items: indicatorSubmenu(active) },
+    { label: 'Chart settings', onSelect: openChartSettings },
     'separator',
     ...scaleEntries(active),
     {

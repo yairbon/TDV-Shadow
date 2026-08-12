@@ -15,6 +15,7 @@
 import { getIndicator } from '../indicators/registry.js';
 import type { IndicatorId, IndicatorParams, PlotSpec } from '../indicators/types.js';
 import type { PlotStyles, PlotStyleOverride } from '../renderer/layers/annotationsLayer.js';
+import { colorField, createSheet, footer, numberField, selectField, sheetForm } from './sheet.js';
 
 export interface IndicatorSettings {
   readonly params: IndicatorParams;
@@ -71,15 +72,7 @@ const FIELDS: Readonly<Record<string, FieldSpec | undefined>> = {
   source: { kind: 'source', label: 'Source' },
 };
 
-const SOURCES: readonly IndicatorParams['source'][] = [
-  'close',
-  'open',
-  'high',
-  'low',
-  'hl2',
-  'hlc3',
-  'ohlc4',
-];
+const SOURCES: readonly string[] = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'];
 
 const DASHES: readonly { readonly label: string; readonly dash: readonly number[] }[] = [
   { label: 'Solid', dash: [] },
@@ -96,23 +89,7 @@ const dashLabel = (dash: readonly number[] | undefined): string => {
 };
 
 export function createIndicatorDialog(host: HTMLElement = document.body): IndicatorDialog {
-  const dialog = document.createElement('dialog');
-  dialog.id = 'indicator-settings';
-  dialog.className = 'sheet';
-  host.append(dialog);
-
-  let cancel: (() => void) | null = null;
-
-  const close = (): void => {
-    if (dialog.open) dialog.close();
-  };
-
-  // A dialog dismissed with Escape fires `cancel`, and the browser closes it for us. The
-  // revert has to hang off that event rather than off the Cancel button alone, or Escape
-  // would silently keep every live-previewed edit.
-  dialog.addEventListener('cancel', () => {
-    cancel?.();
-  });
+  const sheet = createSheet('indicator-settings', host);
 
   return {
     open(request) {
@@ -127,26 +104,15 @@ export function createIndicatorDialog(host: HTMLElement = document.body): Indica
       }
       const styles = new Map<string, PlotStyleOverride>(Object.entries(request.styles));
       const original: IndicatorSettings = { params: request.params, styles: request.styles };
-      const asParams = (): IndicatorParams => Object.fromEntries(params);
-      const asStyles = (): PlotStyles => Object.fromEntries(styles);
-
-      let reverted = false;
-      cancel = () => {
-        if (reverted) return;
-        reverted = true;
-        request.onCancel(original);
-      };
 
       const apply = (): void => {
-        request.onApply({ params: asParams(), styles: asStyles() });
+        request.onApply({
+          params: Object.fromEntries(params),
+          styles: Object.fromEntries(styles),
+        });
       };
 
-      const form = document.createElement('form');
-      form.method = 'dialog';
-
-      const heading = document.createElement('h2');
-      heading.textContent = definition.label;
-      form.append(heading);
+      const form = sheetForm(definition.label);
 
       // ---- inputs, one per declared default ----
       const inputs = document.createElement('div');
@@ -155,43 +121,35 @@ export function createIndicatorDialog(host: HTMLElement = document.body): Indica
         const spec = FIELDS[name];
         if (spec === undefined) continue;
 
-        const label = document.createElement('label');
-        label.textContent = spec.label;
-
         if (spec.kind === 'source') {
-          const select = document.createElement('select');
-          select.dataset['param'] = name;
-          for (const source of SOURCES) {
-            const option = document.createElement('option');
-            option.value = source ?? 'close';
-            option.textContent = source ?? 'close';
-            select.append(option);
-          }
-          select.value = String(params.get(name) ?? 'close');
-          select.addEventListener('change', () => {
-            params.set(name, select.value);
-            apply();
-          });
-          label.append(select);
-        } else {
-          const input = document.createElement('input');
-          input.type = 'number';
-          input.dataset['param'] = name;
-          input.min = String(spec.min);
-          input.max = String(spec.max);
-          input.step = String(spec.step);
-          input.value = String(params.get(name) ?? spec.min);
-          input.addEventListener('input', () => {
-            const value = Number(input.value);
-            // Out-of-range or half-typed input is ignored rather than clamped: clamping
-            // fights the user mid-keystroke, turning "50" into "5" then "50".
-            if (!Number.isFinite(value) || value < spec.min || value > spec.max) return;
-            params.set(name, spec.step >= 1 ? Math.round(value) : value);
-            apply();
-          });
-          label.append(input);
+          inputs.append(
+            selectField({
+              label: spec.label,
+              dataset: { param: name },
+              options: SOURCES,
+              value: String(params.get(name) ?? 'close'),
+              onChange: (value) => {
+                params.set(name, value);
+                apply();
+              },
+            }),
+          );
+          continue;
         }
-        inputs.append(label);
+        inputs.append(
+          numberField({
+            label: spec.label,
+            dataset: { param: name },
+            min: spec.min,
+            max: spec.max,
+            step: spec.step,
+            value: Number(params.get(name) ?? spec.min),
+            onChange: (value) => {
+              params.set(name, value);
+              apply();
+            },
+          }),
+        );
       }
       form.append(inputs);
 
@@ -210,102 +168,89 @@ export function createIndicatorDialog(host: HTMLElement = document.body): Indica
           name.className = 'nm';
           name.textContent = plot.label;
 
-          const color = document.createElement('input');
-          color.type = 'color';
-          color.dataset['plotColor'] = plot.key;
-          color.value = styles.get(plot.key)?.color ?? FALLBACK_COLOR;
-          color.addEventListener('input', () => {
-            styles.set(plot.key, { ...styles.get(plot.key), color: color.value });
-            apply();
-          });
-
-          const width = document.createElement('input');
-          width.type = 'number';
-          width.dataset['plotWidth'] = plot.key;
-          width.min = '1';
-          width.max = '8';
-          width.step = '0.5';
-          width.value = String(styles.get(plot.key)?.lineWidth ?? 1.5);
-          width.addEventListener('input', () => {
-            const value = Number(width.value);
-            if (!Number.isFinite(value) || value < 1 || value > 8) return;
-            styles.set(plot.key, { ...styles.get(plot.key), lineWidth: value });
-            apply();
-          });
-
-          const dash = document.createElement('select');
-          dash.dataset['plotDash'] = plot.key;
-          for (const entry of DASHES) {
-            const option = document.createElement('option');
-            option.value = entry.label;
-            option.textContent = entry.label;
-            dash.append(option);
-          }
-          dash.value = dashLabel(styles.get(plot.key)?.dash);
-          dash.addEventListener('change', () => {
-            const entry = DASHES.find((d) => d.label === dash.value) ?? DASHES[0];
-            styles.set(plot.key, { ...styles.get(plot.key), dash: entry.dash });
-            apply();
-          });
-
-          row.append(name, color, width, dash);
+          row.append(
+            name,
+            colorField({
+              label: '',
+              dataset: { plotColor: plot.key },
+              value: styles.get(plot.key)?.color ?? FALLBACK_COLOR,
+              onChange: (color) => {
+                styles.set(plot.key, { ...styles.get(plot.key), color });
+                apply();
+              },
+            }),
+            numberField({
+              label: '',
+              dataset: { plotWidth: plot.key },
+              min: 1,
+              max: 8,
+              step: 0.5,
+              value: styles.get(plot.key)?.lineWidth ?? 1.5,
+              onChange: (lineWidth) => {
+                styles.set(plot.key, { ...styles.get(plot.key), lineWidth });
+                apply();
+              },
+            }),
+            selectField({
+              label: '',
+              dataset: { plotDash: plot.key },
+              options: DASHES.map((d) => d.label),
+              value: dashLabel(styles.get(plot.key)?.dash),
+              onChange: (label) => {
+                const entry = DASHES.find((d) => d.label === label) ?? DASHES[0];
+                styles.set(plot.key, { ...styles.get(plot.key), dash: entry.dash });
+                apply();
+              },
+            }),
+          );
           form.append(row);
         }
       }
 
-      // ---- footer ----
-      const footer = document.createElement('div');
-      footer.className = 'row-end';
+      form.append(
+        footer([
+          {
+            label: 'Defaults',
+            id: 'indicator-reset',
+            onSelect: () => {
+              params.clear();
+              for (const [key, value] of Object.entries(definition.defaults)) {
+                if (typeof value === 'number' || typeof value === 'string') params.set(key, value);
+              }
+              styles.clear();
+              apply();
+              // Nothing left to revert to: Defaults IS the commit.
+              sheet.commit();
+            },
+          },
+          {
+            label: 'Cancel',
+            id: 'indicator-cancel',
+            onSelect: () => {
+              sheet.close();
+            },
+          },
+          {
+            label: 'Ok',
+            id: 'indicator-ok',
+            primary: true,
+            onSelect: () => {
+              sheet.commit();
+            },
+          },
+        ]),
+      );
 
-      const reset = document.createElement('button');
-      reset.type = 'button';
-      reset.className = 'tb';
-      reset.id = 'indicator-reset';
-      reset.textContent = 'Defaults';
-      reset.addEventListener('click', () => {
-        params.clear();
-        for (const [key, value] of Object.entries(definition.defaults)) {
-          if (typeof value === 'number' || typeof value === 'string') params.set(key, value);
-        }
-        styles.clear();
-        apply();
-        // Nothing left to revert to: Defaults IS the commit.
-        reverted = true;
-        close();
+      sheet.show(form, () => {
+        request.onCancel(original);
       });
-
-      const cancelButton = document.createElement('button');
-      cancelButton.type = 'button';
-      cancelButton.className = 'tb';
-      cancelButton.id = 'indicator-cancel';
-      cancelButton.textContent = 'Cancel';
-      cancelButton.addEventListener('click', () => {
-        cancel?.();
-        close();
-      });
-
-      const ok = document.createElement('button');
-      ok.type = 'button';
-      ok.className = 'tb primary';
-      ok.id = 'indicator-ok';
-      ok.textContent = 'Ok';
-      ok.addEventListener('click', () => {
-        // Committing means there is nothing left to revert.
-        reverted = true;
-        close();
-      });
-
-      footer.append(reset, cancelButton, ok);
-      form.append(footer);
-
-      dialog.replaceChildren(form);
-      dialog.showModal();
     },
 
-    close,
+    close() {
+      sheet.close();
+    },
     dispose() {
-      close();
-      dialog.remove();
+      sheet.dispose();
     },
   };
 }

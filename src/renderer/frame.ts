@@ -52,6 +52,11 @@ export interface FrameInput {
   readonly pointer: PointerState | null;
   /** Milliseconds per bar for the snapshot's timeframe; drives time-tick units. */
   readonly timeframeMs: number;
+  /**
+   * Whether the grid rules are painted. Axis rules, ticks and labels are unaffected —
+   * "no gridlines" means a clean plot, not an unreadable one.
+   */
+  readonly showGrid: boolean;
 }
 
 /**
@@ -104,6 +109,8 @@ export interface FrameInputOptions {
   readonly priceRange: PriceRange | null;
   /** §2.1 — reflects the price map so high prices sit at the bottom. */
   readonly priceScaleInverted?: boolean;
+  /** Defaults to true; false hides the grid rules only. */
+  readonly showGrid?: boolean;
   /**
    * Memo for the §4 autoscale. Create one per chart and pass it every frame;
    * omitting it recomputes the range on every frame, which §4 forbids for anything
@@ -150,5 +157,6 @@ export function buildFrameInput(o: FrameInputOptions): FrameInput {
     overlays: o.overlays,
     pointer: o.pointer,
     timeframeMs: TIMEFRAME_MS[o.snapshot.series.tf],
+    showGrid: o.showGrid ?? true,
   });
 }

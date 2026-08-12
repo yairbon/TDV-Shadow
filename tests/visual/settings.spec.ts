@@ -435,3 +435,181 @@ test.describe('drawing style', () => {
     expect(restored['lineWidth']).toBe(3);
   });
 });
+
+// ------------------------------------------------------------------ 8.3 chart settings
+
+/**
+ * Counts INK on a layer: pixels that differ from that layer's own background.
+ *
+ * Alpha is useless here — the grid layer paints an opaque background first, so every
+ * pixel on it is alpha 255 whether anything was drawn or not, and an alpha count would
+ * report the same number for a full grid and a blank one.
+ */
+const ink = (page: Page, layer: string): Promise<number> =>
+  page.evaluate((name) => {
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      `#chart canvas[data-layer="${name}"]`,
+    );
+    const ctx = canvas?.getContext('2d') ?? null;
+    if (canvas === null || ctx === null) return 0;
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    // (0,0) is above the plot and outside every rule, so it is the background by
+    // construction.
+    const bg = [data[0], data[1], data[2]];
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (
+        Math.abs(data[i] - bg[0]) > 6 ||
+        Math.abs(data[i + 1] - bg[1]) > 6 ||
+        Math.abs(data[i + 2] - bg[2]) > 6
+      ) {
+        count++;
+      }
+    }
+    return count;
+  }, layer);
+
+async function openChartSettings(page: Page): Promise<void> {
+  await page.click('#chart-settings');
+  await page.waitForSelector('#chart-settings-dialog[open], dialog#chart-settings[open]');
+}
+
+test.describe('chart settings', () => {
+  test('turning gridlines off removes ink from the grid layer but keeps the axes', async ({
+    page,
+  }) => {
+    await open(page);
+    await page.waitForTimeout(300);
+    const before = await ink(page, 'grid');
+    expect(before).toBeGreaterThan(1000);
+
+    await openChartSettings(page);
+    await page.uncheck('#chart-grid');
+    await page.waitForTimeout(300);
+    const after = await ink(page, 'grid');
+    expect(after).toBeLessThan(before * 0.8);
+    // Axis rules, ticks and labels still paint: "no gridlines" is not "no axes".
+    expect(after).toBeGreaterThan(500);
+  });
+
+  test('price decimals reach the axis labels', async ({ page }) => {
+    await open(page);
+    await openChartSettings(page);
+    await page.fill('#chart-precision', '4');
+    await page.waitForTimeout(300);
+    await page.click('#chart-ok');
+    await page.waitForTimeout(200);
+
+    const precision = await page.evaluate(() => {
+      const chart = (window as { __chart?: { settings: () => { pricePrecision: number } } }).__chart;
+      return chart?.settings().pricePrecision ?? -1;
+    });
+    expect(precision).toBe(4);
+  });
+
+  test('the right margin changes where realtime snaps to', async ({ page }) => {
+    await open(page);
+    await openChartSettings(page);
+    await page.fill('#chart-margin', '20');
+    await page.waitForTimeout(200);
+    await page.click('#chart-ok');
+    await page.waitForTimeout(200);
+
+    const scroll = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          scrollToRealtime: () => void;
+          view: { get: () => { scrollPosition: number } };
+          series: { get: () => { bars: readonly unknown[] } };
+        };
+      }).__chart;
+      if (chart === undefined) return { position: 0, count: 0 };
+      chart.scrollToRealtime();
+      return {
+        position: chart.view.get().scrollPosition,
+        count: chart.series.get().bars.length,
+      };
+    });
+    expect(scroll.position).toBeCloseTo(scroll.count - 1 + 20, 6);
+  });
+
+  test('a custom up colour repaints the candles without rebuilding the chart', async ({ page }) => {
+    await open(page);
+    await page.waitForTimeout(300);
+
+    const frames = (): Promise<number> =>
+      page.evaluate(() => {
+        const fn = (window as { __chartGeometry?: () => unknown }).__chartGeometry;
+        const g = fn === undefined ? null : (fn() as { frameCount?: number } | null);
+        return g?.frameCount ?? 0;
+      });
+    const magenta = (): Promise<number> =>
+      page.evaluate(() => {
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '#chart canvas[data-layer="series"]',
+        );
+        const ctx = canvas?.getContext('2d') ?? null;
+        if (canvas === null || ctx === null) return 0;
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let count = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          if (data[i] > 200 && data[i + 1] < 60 && data[i + 2] > 200 && data[i + 3] > 128) count++;
+        }
+        return count;
+      });
+
+    expect(await magenta()).toBe(0);
+    const before = await frames();
+
+    await openChartSettings(page);
+    await page.fill('#chart-up', '#ff00ff');
+    await page.waitForTimeout(400);
+
+    expect(await magenta()).toBeGreaterThan(100);
+    // A rebuild resets frameCount to zero; updateSettings must only invalidate.
+    expect(await frames()).toBeGreaterThan(before);
+  });
+
+  test('Cancel restores every field at once', async ({ page }) => {
+    await open(page);
+    await openChartSettings(page);
+    await page.uncheck('#chart-grid');
+    await page.fill('#chart-precision', '5');
+    await page.waitForTimeout(200);
+    await page.click('#chart-cancel');
+    await page.waitForTimeout(300);
+
+    const settings = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: { settings: () => { pricePrecision: number; showGrid: boolean } };
+      }).__chart;
+      return chart?.settings() ?? null;
+    });
+    expect(settings).toMatchObject({ pricePrecision: 2, showGrid: true });
+  });
+
+  test('chart settings survive a reload', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.evaluate(() => {
+      localStorage.clear();
+    });
+    await openChartSettings(page);
+    await page.uncheck('#chart-grid');
+    await page.fill('#chart-precision', '3');
+    await page.waitForTimeout(200);
+    await page.click('#chart-ok');
+    await page.waitForTimeout(900);
+
+    await page.reload();
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.waitForTimeout(500);
+    const settings = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: { settings: () => { pricePrecision: number; showGrid: boolean } };
+      }).__chart;
+      return chart?.settings() ?? null;
+    });
+    expect(settings).toMatchObject({ pricePrecision: 3, showGrid: false });
+  });
+});

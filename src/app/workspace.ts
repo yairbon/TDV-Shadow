@@ -37,6 +37,43 @@ export interface Workspace {
   readonly drawings: string | null;
   readonly barSpacing: number;
   readonly scrollPosition: number;
+  /** Presentation settings (8.3). Null when the payload predates them. */
+  readonly chartSettings: ChartSettings | null;
+}
+
+/** Mirrors `ChartSettingsForm` in ui/chartDialog, kept structural to avoid a UI import. */
+export interface ChartSettings {
+  readonly showGrid: boolean;
+  readonly pricePrecision: number;
+  readonly rightMargin: number;
+  readonly upColor: string;
+  readonly downColor: string;
+}
+
+const isColor = (value: unknown): value is string =>
+  typeof value === 'string' && /^#[0-9a-f]{3,8}$/i.test(value);
+
+/**
+ * Total, like everything else in this file: one bad field discards the settings block
+ * rather than the whole workspace, and rather than handing a junk string to a canvas
+ * `fillStyle`.
+ */
+function readChartSettings(value: unknown): ChartSettings | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const precision = record['pricePrecision'];
+  const margin = record['rightMargin'];
+  if (typeof record['showGrid'] !== 'boolean') return null;
+  if (typeof precision !== 'number' || precision < 0 || precision > 8) return null;
+  if (typeof margin !== 'number' || margin < 0 || margin > 80) return null;
+  if (!isColor(record['upColor']) || !isColor(record['downColor'])) return null;
+  return {
+    showGrid: record['showGrid'],
+    pricePrecision: Math.round(precision),
+    rightMargin: Math.round(margin),
+    upColor: record['upColor'],
+    downColor: record['downColor'],
+  };
 }
 
 const isChartType = (value: unknown): value is ChartType =>
@@ -143,6 +180,7 @@ export function loadWorkspace(): Workspace | null {
     barSpacing: typeof record['barSpacing'] === 'number' ? record['barSpacing'] : 8,
     scrollPosition:
       typeof record['scrollPosition'] === 'number' ? record['scrollPosition'] : Number.NaN,
+    chartSettings: readChartSettings(record['chartSettings']),
   };
 }
 
