@@ -25,7 +25,8 @@ export type IndicatorId =
   | 'atr'
   | 'volume'
   | 'volume-profile'
-  | 'obv';
+  | 'obv'
+  | 'cci';
 
 /** Where an indicator draws. */
 export type IndicatorPlacement = 'overlay' | 'pane';
