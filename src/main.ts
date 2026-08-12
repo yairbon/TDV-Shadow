@@ -186,7 +186,21 @@ if (savedPane !== null && loaded.base !== null && savedPane.timeframe !== '1m') 
 let rendererMode: RendererMode = num('gl', 0) === 1 ? 'webgl' : (saved?.renderer ?? 'canvas2d');
 let scaleMode: PriceScaleMode =
   params.get('scale') === 'log' ? 'log' : (savedPane?.priceScaleMode ?? 'linear');
-let themeName: 'dark' | 'light' = 'dark';
+/**
+ * The chrome's theme and the canvas theme must be the same theme.
+ *
+ * The CSS keys off `data-theme` on the root element and the canvas keys off this
+ * variable, but only the toggle ever set the attribute — so the app assumed nothing else
+ * would. Anything that stamps the document before boot (an embedding host, a
+ * user-stylesheet extension) got light chrome wrapped around a dark plot. Adopt an
+ * existing stamp, then always write one back, so the two halves cannot disagree.
+ *
+ * Deliberately NOT `prefers-color-scheme`: the default look is dark by design, and
+ * following the OS would be a product decision rather than a consistency fix.
+ */
+let themeName: 'dark' | 'light' =
+  document.documentElement.dataset['theme'] === 'light' ? 'light' : 'dark';
+document.documentElement.dataset['theme'] = themeName;
 let inverted = params.get('invert') === '1' || (savedPane?.priceScaleInverted ?? false);
 
 /** Presentation settings. Colours are stored as chosen, not as a whole theme, so the

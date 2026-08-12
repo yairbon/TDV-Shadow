@@ -12,7 +12,7 @@ const body = html.match(/<body>([\s\S]*?)<\/body>/)?.[1]?.replace(/<script[\s\S]
 if (!style.trim() || !body.trim()) throw new Error('failed to extract style or body from dist/index.html');
 if (/https?:\/\//.test(js.slice(0, 4000))) console.warn('note: check bundle for external URLs');
 
-const out = `<title>TDV-Shadow — Canvas/WebGL candlestick chart</title>
+const out = `<title>TDV-Shadow</title>
 <style>
 html, body { height: 100%; margin: 0; }
 ${style}

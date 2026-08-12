@@ -257,3 +257,62 @@ test.describe('toolbar chrome', () => {
     expect(box?.statusRight ?? 0).toBeLessThanOrEqual((box?.barRight ?? 0) + 0.5);
   });
 });
+
+test.describe('theme consistency', () => {
+  /** The canvas theme, read from the grid layer's background pixel. */
+  const canvasIsDark = (page: Page): Promise<boolean> =>
+    page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>('#chart canvas[data-layer="grid"]');
+      const ctx = canvas?.getContext('2d') ?? null;
+      if (canvas === null || ctx === null) return false;
+      const [r, g, b] = ctx.getImageData(Math.round(canvas.width * 0.5), 4, 1, 1).data;
+      return r + g + b < 300;
+    });
+
+  /** The chrome's theme, read from the top bar's computed background. */
+  const chromeIsDark = (page: Page): Promise<boolean> =>
+    page.evaluate(() => {
+      const bar = document.querySelector('#topbar');
+      if (bar === null) return false;
+      const rgb = getComputedStyle(bar).backgroundColor.match(/\d+/g) ?? [];
+      return rgb.slice(0, 3).reduce((sum, n) => sum + Number(n), 0) < 300;
+    });
+
+  test('the chrome and the canvas agree by default', async ({ page }) => {
+    await openChart(page, '?seed=7&bars=200&live=0');
+    expect(await chromeIsDark(page)).toBe(true);
+    expect(await canvasIsDark(page)).toBe(true);
+  });
+
+  test('the chrome and the canvas agree after the toggle', async ({ page }) => {
+    await openChart(page, '?seed=7&bars=200&live=0');
+    await page.click('#theme-toggle');
+    await page.waitForTimeout(400);
+    expect(await chromeIsDark(page)).toBe(false);
+    expect(await canvasIsDark(page)).toBe(false);
+  });
+
+  test('a theme stamped on the document before boot is adopted, not fought', async ({ page }) => {
+    // Only the toggle ever wrote `data-theme`, so the app assumed nothing else would.
+    // An embedding host that stamps the document got light chrome around a dark plot.
+    //
+    // Stamped by rewriting the served markup rather than with `addInitScript`: an init
+    // script runs before the document element exists, so it cannot set an attribute on
+    // it — which is also why this has to arrive the way a real host delivers it.
+    await page.route(
+      (url) => url.pathname === '/',
+      async (route) => {
+        const response = await route.fetch();
+        const html = (await response.text()).replace(
+          '<html lang="en">',
+          '<html lang="en" data-theme="light">',
+        );
+        await route.fulfill({ response, body: html });
+      },
+    );
+    await openChart(page, '?seed=7&bars=200&live=0');
+    await page.waitForTimeout(300);
+    expect(await chromeIsDark(page)).toBe(false);
+    expect(await canvasIsDark(page)).toBe(false);
+  });
+});
