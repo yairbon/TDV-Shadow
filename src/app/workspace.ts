@@ -61,6 +61,15 @@ export interface PaneState {
   readonly alerts: string | null;
   readonly barSpacing: number;
   readonly scrollPosition: number;
+  /**
+   * Pane heights the user dragged to, or null for the default split.
+   *
+   * Added without a version bump: it is optional in both directions, so a v3 payload
+   * without it loads as null (the default), and a v3 reader that predates it ignores the
+   * field. Bumping would have discarded every existing workspace to add one nullable
+   * number list, which is a worse trade than the one the v2 migration was worth.
+   */
+  readonly paneFractions: readonly number[] | null;
 }
 
 export interface Workspace {
@@ -240,6 +249,24 @@ function readDrawingsBySymbol(record: Record<string, unknown>): Record<string, s
   return out;
 }
 
+/**
+ * Pane height fractions, or null.
+ *
+ * Every entry must be a finite number in (0, 1): these are divided into a pixel budget,
+ * and a NaN or a negative would propagate into a `Rect` and out into `fillRect`.
+ */
+function readPaneFractions(value: unknown): readonly number[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const out: number[] = [];
+  for (const entry of value as unknown[]) {
+    if (typeof entry !== 'number' || !Number.isFinite(entry) || entry <= 0 || entry >= 1) {
+      return null;
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 /** One pane, validated field by field. Returns null when it cannot be trusted. */
 function readPane(value: unknown): PaneState | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -276,6 +303,7 @@ function readPane(value: unknown): PaneState | null {
     // Validated by the alert store's own loadJSON, which drops bad entries field by
     // field; storing it as a string keeps one owner for that schema.
     alerts: typeof record['alerts'] === 'string' ? record['alerts'] : null,
+    paneFractions: readPaneFractions(record['paneFractions']),
     barSpacing: typeof record['barSpacing'] === 'number' ? record['barSpacing'] : 8,
     scrollPosition:
       typeof record['scrollPosition'] === 'number' ? record['scrollPosition'] : Number.NaN,

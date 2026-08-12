@@ -75,6 +75,7 @@ const modern = (): Workspace => ({
       indicators: [],
       drawingsBySymbol: { AAPL: '{"version":1,"drawings":[]}', MSFT: '{"version":1,"drawings":[]}' },
       alerts: null,
+      paneFractions: null,
       barSpacing: 8,
       scrollPosition: 100,
     },

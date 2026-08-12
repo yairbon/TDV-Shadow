@@ -26,7 +26,14 @@ import {
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { makePriceRange } from '../renderer/scale/priceScale.js';
-import { computeLayout, type Layout, type Rect } from '../renderer/layout.js';
+import {
+  computeLayout,
+  dividerAt,
+  resizePane,
+  type Layout,
+  type PaneDivider,
+  type Rect,
+} from '../renderer/layout.js';
 import { candleGeometry, MIN_BAR_SPACING } from '../renderer/scale/timeScale.js';
 import { maxVolume } from '../renderer/scale/volumeScale.js';
 import { createGlSeriesLayer } from '../renderer/webgl/glSeriesLayer.js';
@@ -113,6 +120,8 @@ export interface ChartOptions {
    */
   readonly renderer?: RendererMode;
   readonly priceScaleMode?: PriceScaleMode;
+  /** Restored pane heights (Tier 2 resizable panes). Absent means the default split. */
+  readonly paneFractions?: readonly number[];
   /** Restores pan/zoom across a renderer swap, which has to rebuild the chart. */
   readonly scrollPosition?: number;
   readonly chartType?: ChartType;
@@ -269,6 +278,16 @@ export interface Chart {
    * the primary's own price scale — see `compareY` for why that is the honest choice.
    */
   setCompare(compare: { readonly symbol: string; readonly bars: readonly Bar[] } | null): void;
+  /**
+   * The pane divider within `tolerance` px of `y`, or null — for the cursor and for
+   * starting a drag. Y is CSS px relative to the chart container.
+   */
+  dividerAt(y: number, tolerance?: number): PaneDivider | null;
+  /** Drags divider `index` to `y`, relaying out. Clamped; a no-op if nothing moves. */
+  dragDivider(index: number, y: number): void;
+  /** Current pane heights, or null while they are still the default split. */
+  paneFractions(): readonly number[] | null;
+  resetPanes(): void;
   compareSymbol(): string | null;
   setMeasure(measure: { readonly from: Anchor; readonly to: Anchor } | null): void;
   measure(): { readonly from: Anchor; readonly to: Anchor } | null;
@@ -423,6 +442,23 @@ export function createChart(o: ChartOptions): Chart {
     return dataRev;
   };
 
+  /**
+   * User-chosen heights for the stacked panes, or null for the default split.
+   *
+   * Null rather than the computed defaults so that "never dragged" stays distinguishable
+   * from "dragged back to roughly the default": the former must keep following the
+   * default rules as panes are added and removed, and the latter must not.
+   */
+  let paneFractions: readonly number[] | null = o.paneFractions ?? null;
+
+  const layoutOptions = (cssWidth: number, cssHeight: number) => ({
+    width: Math.max(1, cssWidth),
+    height: Math.max(1, cssHeight),
+    ...LAYOUT_CHROME,
+    extraPanes: paneCount(),
+    ...(paneFractions === null ? {} : { paneFractions }),
+  });
+
   let layout: Layout = computeLayout({
     width: Math.max(1, o.container.clientWidth),
     height: Math.max(1, o.container.clientHeight),
@@ -441,12 +477,7 @@ export function createChart(o: ChartOptions): Chart {
     features.indicators.filter((i) => PANE_INDICATORS.has(i.id)).length;
 
   const relayout = (cssWidth: number, cssHeight: number): Layout =>
-    computeLayout({
-      width: Math.max(1, cssWidth),
-      height: Math.max(1, cssHeight),
-      ...LAYOUT_CHROME,
-      extraPanes: paneCount(),
-    });
+    computeLayout(layoutOptions(cssWidth, cssHeight));
 
   const onResize = (cssWidth: number, cssHeight: number): void => {
     layout = relayout(cssWidth, cssHeight);
@@ -1285,6 +1316,28 @@ export function createChart(o: ChartOptions): Chart {
         barIndex: input.timeScale.indexAt(asPixel(snapped.x)),
         price: input.priceScale.price(asPixel(snapped.y)),
       };
+    },
+    dividerAt: (y, tolerance) => dividerAt(layout, y, tolerance),
+    dragDivider(index, y) {
+      const next = resizePane(layout, layoutOptions(cssSize.width, cssSize.height), index, y);
+      // Reference equality is not enough — `resizePane` returns a fresh array every call —
+      // so compare element-wise and skip the relayout when the drag changed nothing. A
+      // clamped drag fires on every pointer move and would otherwise repaint continuously.
+      const same =
+        paneFractions !== null &&
+        paneFractions.length === next.length &&
+        paneFractions.every((v, i) => v === next[i]);
+      if (same) return;
+      paneFractions = next;
+      layout = relayout(cssSize.width, cssSize.height);
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    paneFractions: () => paneFractions,
+    resetPanes() {
+      if (paneFractions === null) return;
+      paneFractions = null;
+      layout = relayout(cssSize.width, cssSize.height);
+      scheduler.invalidate(DirtyFlags.All);
     },
     setCompare(next) {
       compare = next;

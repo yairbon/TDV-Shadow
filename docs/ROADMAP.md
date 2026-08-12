@@ -201,7 +201,16 @@ Three more from the same pass, each of which only shows up on screen:
   Hide/lock per row and in bulk, remove, and select; the panel subscribes to the store so
   an edit made on the canvas keeps it honest.
 
-Still open in Tier 2: multiple price scales with resizable panes, and named layouts.
+- **Resizable panes.** The split was a single fixed fraction, so an RSI squashed into 60px
+  stayed squashed. Drag the gap between any two stacked panes; height moves between that
+  pair only, their total is invariant (which is what makes a drag exactly reversible), and
+  a drag past the limit clamps rather than inverting a pane. Starvation scales every pane
+  down together rather than dropping one — a user who dragged two dividers should not have
+  a pane vanish. Persisted without a schema bump, since the field is optional in both
+  directions and bumping would have discarded every existing workspace.
+
+Still open in Tier 2: multiple price scales (left/right assignment per series), and named
+layouts.
 
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,

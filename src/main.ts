@@ -124,6 +124,8 @@ interface Pane {
    * drawings sitting next to them were destroyed.
    */
   drawingsBySymbol: Map<string, string>;
+  /** Dragged pane heights, or null for the default split. Per pane, like the view. */
+  paneFractions: readonly number[] | null;
   /**
    * Indicators, which belong to the CHART and therefore do NOT follow the symbol.
    *
@@ -272,6 +274,8 @@ let indicatorSpecs: readonly IndicatorSpec[] = [];
  * them under that would move every drawing onto whichever symbol you switched to.
  */
 let chartSymbol = symbol;
+/** The ACTIVE pane's dragged pane heights; swapped by stashActive/adoptActive. */
+let paneFractions: readonly number[] | null = savedPane?.paneFractions ?? null;
 /**
  * Tickers loaded this session, most recent first.
  *
@@ -337,6 +341,7 @@ function build(scrollPosition?: number, barSpacing?: number): void {
     renderer: rendererMode,
     theme: themeName === 'light' ? LIGHT_THEME : DARK_THEME,
     priceScaleMode: scaleMode,
+    ...(paneFractions === null ? {} : { paneFractions }),
     ...(scrollPosition === undefined ? {} : { scrollPosition }),
   });
   window.__chartGeometry = () => chart?.geometry() ?? null;
@@ -431,6 +436,7 @@ function stashActive(): void {
   // Capture before the swap: the outgoing pane's live drawings are still on its chart.
   captureAnnotations();
   pane.drawingsBySymbol = drawingsBySymbol;
+  pane.paneFractions = chart?.paneFractions() ?? paneFractions;
   pane.indicatorSpecs = indicatorSpecs;
 }
 
@@ -446,6 +452,7 @@ function adoptActive(): void {
   alertsJson = pane.alertsJson;
   history = pane.history;
   drawingsBySymbol = pane.drawingsBySymbol;
+  paneFractions = pane.paneFractions;
   indicatorSpecs = pane.indicatorSpecs;
   chartSymbol = pane.symbol;
   window.__chartGeometry = () => chart?.geometry() ?? null;
@@ -578,6 +585,7 @@ function newPane(index: number): Pane {
     bars: initial.bars,
     chart: null,
     drawingsBySymbol: new Map(),
+    paneFractions: null,
     indicatorSpecs: [],
     scaleMode: 'linear',
     inverted: false,
@@ -1827,6 +1835,7 @@ function paneStateOf(pane: Pane): PaneState | null {
     })),
     drawingsBySymbol: drawingMapOf(pane, isActive, target),
     alerts: target.alerts.list().length > 0 ? target.alerts.toJSON() : null,
+    paneFractions: target.paneFractions(),
     barSpacing: view.barSpacing,
     scrollPosition: view.scrollPosition,
   };
@@ -2032,16 +2041,65 @@ window.addEventListener('pointerup', () => {
 });
 
 // Cursor feedback: a shape under the pointer should look grabbable.
+/**
+ * Dragging the divider between stacked panes.
+ *
+ * Kept separate from the drawing drag: that one runs in the capture phase over the plot,
+ * while this starts in the GAP between panes where no drawing can be, so the two can
+ * never contend for the same pointerdown.
+ */
+let paneDrag: { readonly host: HTMLElement; readonly index: number } | null = null;
+
+panesHost.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (activeTool !== '' || event.button !== 0) return;
+    const active = currentChart();
+    if (active === null) return;
+    const host = hostOf(event);
+    const divider = active.dividerAt(event.clientY - host.getBoundingClientRect().top);
+    if (divider === null) return;
+    paneDrag = { host, index: divider.index };
+    host.setPointerCapture(event.pointerId);
+    // Pan must not also see this: the pointer is over the chart, and the pan handler has
+    // no idea the gap between panes means something.
+    event.preventDefault();
+    event.stopPropagation();
+  },
+  true,
+);
+
+window.addEventListener('pointermove', (event) => {
+  const active = paneDrag;
+  if (active === null) return;
+  currentChart()?.dragDivider(active.index, event.clientY - active.host.getBoundingClientRect().top);
+});
+
+window.addEventListener('pointerup', (event) => {
+  if (paneDrag === null) return;
+  paneDrag.host.releasePointerCapture(event.pointerId);
+  paneDrag = null;
+  // The chart owns the live value; mirror it so the next rebuild restores what was
+  // dragged rather than snapping back to the default split.
+  paneFractions = currentChart()?.paneFractions() ?? paneFractions;
+  persist();
+});
+
 panesHost.addEventListener('pointermove', (event) => {
   const active = currentChart();
-  if (active === null || drag !== null) return;
+  if (active === null || drag !== null || paneDrag !== null) return;
   if (activeTool !== '') {
     hostOf(event).style.cursor = 'crosshair';
     if (isDrawingTool(activeTool)) pushPlacement(event);
     return;
   }
+  const host = hostOf(event);
+  if (active.dividerAt(event.clientY - host.getBoundingClientRect().top) !== null) {
+    host.style.cursor = 'ns-resize';
+    return;
+  }
   const point = localPoint(event);
-  hostOf(event).style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
+  host.style.cursor = active.hitTestAt(point.x, point.y) === null ? 'default' : 'move';
 });
 
 /**
