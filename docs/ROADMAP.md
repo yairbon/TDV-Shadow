@@ -108,6 +108,27 @@ covered:
 - **Live ticks reached only the active pane**, so a multi-pane layout froze every chart
   you were not looking at.
 
+## Found by driving long sessions
+
+`tests/visual/workflow.spec.ts` strings features together the way a person would and
+checks only that the chart is still healthy afterwards. Every bug found by hand rather
+than by the suite had come from an interaction BETWEEN features, and none were reachable
+from a test that exercised one at a time. It found three more:
+
+- **`getIntegrityReport()` called correctly drawn charts broken.** §6's no-overlap
+  invariant has a precondition the report ignored: a body is floored at 1px, so a 1px gap
+  needs at least 2px per bar. Below that, bars necessarily share pixels — that is the
+  regime §5.1 aggregates for — and the renderer's own unit tests had always skipped the
+  check there. `ok` was false for any chart fitted to under 2px per bar, which is most of
+  them at a wide zoom.
+- **Shift-drag starting on a drawing grabbed the drawing as well as measuring.** Both
+  handlers sit on the same element, so the measure handler's `stopPropagation` never
+  stopped the selection one; the aborted drag also left an undo step behind.
+- **A boot-time ReferenceError left every test green.** `setActivePane` began touching a
+  `let` declared 500 lines further down, boot calls it while restoring a layout, and the
+  restore died silently. `tests/visual/harness.ts` now fails a test on any uncaught page
+  error, and was itself verified by injecting a throw.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

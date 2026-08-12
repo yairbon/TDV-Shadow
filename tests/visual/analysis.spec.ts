@@ -102,6 +102,54 @@ test.describe('measure tool', () => {
     expect(await scrollOf()).toBeCloseTo(before, 6);
   });
 
+  test('shift-drag over a drawing measures instead of grabbing it', async ({ page }) => {
+    // Both handlers sit on the same element, so the measure handler's stopPropagation
+    // does not stop the selection one. A ruler started on a trendline grabbed the line as
+    // well — and left an undo step behind for a drag that never happened.
+    await open(page);
+    const placed = await page.evaluate(() => {
+      const win = window as {
+        __tdv?: {
+          drawShape: (k: string, a: unknown[], m: string) => unknown;
+          listDrawings: () => readonly { readonly anchors: readonly unknown[] }[];
+        };
+        __chart?: {
+          series: { get: () => { bars: readonly { c: number }[] } };
+          pickAnchor: (x: number, y: number) => { anchor: { barIndex: number; price: number } };
+        };
+      };
+      // A horizontal line right through where the ruler will start.
+      const at = win.__chart?.pickAnchor(300, 200).anchor ?? { barIndex: 0, price: 0 };
+      win.__tdv?.drawShape('horizontal-line', [at], 'off');
+      return win.__tdv?.listDrawings() ?? [];
+    });
+    expect(placed).toHaveLength(1);
+
+    const before = await page.evaluate(() => {
+      const api = (window as {
+        __tdv?: { listDrawings: () => readonly { readonly anchors: readonly unknown[] }[] };
+      }).__tdv;
+      return JSON.stringify(api?.listDrawings()[0]?.anchors ?? []);
+    });
+
+    await shiftDrag(page, { x: 300, y: 200 }, { x: 560, y: 330 });
+
+    expect(await measure(page)).not.toBeNull();
+    const after = await page.evaluate(() => {
+      const api = (window as {
+        __tdv?: { listDrawings: () => readonly { readonly anchors: readonly unknown[] }[] };
+      }).__tdv;
+      return JSON.stringify(api?.listDrawings()[0]?.anchors ?? []);
+    });
+    expect(after).toBe(before);
+
+    const selected = await page.evaluate(() => {
+      const chart = (window as { __chart?: { drawings: { selected: () => string | null } } }).__chart;
+      return chart?.drawings.selected() ?? null;
+    });
+    expect(selected).toBeNull();
+  });
+
   test('shift-drag places no drawing, even with a tool armed', async ({ page }) => {
     await open(page);
     await page.keyboard.press('Alt+t');

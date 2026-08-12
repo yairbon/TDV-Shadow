@@ -28,6 +28,12 @@ import { CONTROL_API_VERSION } from '../mcp/controlApi.js';
 import { computeIndicator } from '../indicators/registry.js';
 import { candleGeometry } from '../renderer/scale/timeScale.js';
 
+/**
+ * Bar spacing at which §6's 1px gap becomes attainable: a 1px body on each side plus the
+ * gap itself. Below this the invariant is not merely violated, it is unsatisfiable.
+ */
+const MIN_GAP_SPACING = 2;
+
 export interface ControlContext {
   symbol: string;
   timeframe: Timeframe;
@@ -144,12 +150,21 @@ export function installControlApi(getChart: () => Chart | null, context: Control
         };
       }
 
+      // §6's no-overlap invariant has a precondition the report used to ignore: a body is
+      // floored at 1px, so a 1px gap between adjacent bodies needs at least 2px per bar.
+      // Below that, bars necessarily share pixels and §5.1 aggregation is what makes the
+      // drawing correct — the renderer's own unit tests have always skipped the check
+      // there. Applying it unconditionally meant `ok` was false for any chart fitted to
+      // under 2px per bar, which is most of them at a wide zoom.
+      const spacing = chart.view.get().barSpacing;
       const sorted = [...dump.candles].sort((a, b) => a.centreX - b.centreX);
       let overlap = false;
-      for (let i = 1; i < sorted.length; i++) {
-        if (sorted[i].centreX - sorted[i].width / 2 < sorted[i - 1].centreX + sorted[i - 1].width / 2 + 1 - 1e-9) {
-          overlap = true;
-          break;
+      if (spacing >= MIN_GAP_SPACING) {
+        for (let i = 1; i < sorted.length; i++) {
+          if (sorted[i].centreX - sorted[i].width / 2 < sorted[i - 1].centreX + sorted[i - 1].width / 2 + 1 - 1e-9) {
+            overlap = true;
+            break;
+          }
         }
       }
 

@@ -1570,6 +1570,11 @@ panesHost.addEventListener(
     // Button 0 only: a right-click must open the menu, not start a drag that the
     // following pointerup then commits.
     if (active === null || activeTool !== '' || event.button !== 0) return;
+    // A measuring gesture is not a selection. Both handlers sit on the same element, so
+    // `stopPropagation` in the measure handler does not stop this one — a shift-drag that
+    // began on a trendline grabbed the line AND measured, and left an undo step behind
+    // for a drag that never happened.
+    if (measureActive(event)) return;
     const point = localPoint(event);
     const hit = active.hitTestAt(point.x, point.y);
     if (hit === null) {

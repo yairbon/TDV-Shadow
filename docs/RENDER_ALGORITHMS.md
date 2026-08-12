@@ -156,7 +156,14 @@ if (bw < 1) bw = 1
 if (s < 3) -> draw high/low line only, bw = 1
 ```
 
-Invariant asserted in tests: for all adjacent i, `X(i+1) - bw/2 >= X(i) + bw/2 + 1`.
+Invariant asserted in tests, **for `s >= 2` only**: for all adjacent i,
+`X(i+1) - bw/2 >= X(i) + bw/2 + 1`.
+
+The precondition is not a caveat, it is arithmetic: `bw` is floored at 1, so two adjacent
+bodies plus a 1px gap need at least 2 CSS px per bar. Below `s = 2` bars necessarily share
+pixels — that is exactly the regime §5.1 aggregates for — and any check that applies this
+invariant there reports a correctly drawn chart as broken. `getIntegrityReport()` did, for
+every chart fitted to under 2px per bar.
 
 ## 7. Pixel snapping
 
