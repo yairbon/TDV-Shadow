@@ -522,6 +522,14 @@ el('#live-toggle')?.addEventListener('click', () => {
 
 // ---------------------------------------------------------------- chart type
 
+/**
+ * Every chart type is pickable now (10.3).
+ *
+ * The resampling five — Renko, Kagi, P&F, Line Break, Range — were excluded because they
+ * index their own bar space while the axis labelled from the source series. The chart now
+ * renders them in that derived space with timestamps resolved back through `sourceIndex`,
+ * so there is one index space again and the axis, crosshair and drawings all agree.
+ */
 const PICKABLE_TYPES: readonly ChartType[] = [
   'candles',
   'hollow-candles',
@@ -532,6 +540,11 @@ const PICKABLE_TYPES: readonly ChartType[] = [
   'step-line',
   'columns',
   'heikin-ashi',
+  'renko',
+  'kagi',
+  'point-and-figure',
+  'line-break',
+  'range',
 ];
 
 const typeSelect = sel('#chart-type');

@@ -15,6 +15,7 @@ import {
   asBarIndex,
   asPixel,
   asPrice,
+  makeBar,
   TIMEFRAME_MS,
   type Bar,
   type PriceScaleMode,
@@ -46,7 +47,7 @@ import { hitTest, type Hit } from '../drawings/hitTest.js';
 import { snapPixel, type SnapResult } from '../drawings/magnet.js';
 import type { Anchor, MagnetMode } from '../drawings/types.js';
 import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
-import type { ChartType, ChartTypeParams } from '../charts/types.js';
+import { timeOf, type ChartType, type ChartTypeParams, type DerivedSeries } from '../charts/types.js';
 import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
 import {
   createFeatureState,
@@ -112,6 +113,16 @@ export interface ChartOptions {
  * p95 rather than the mean: the budget in skills/chart-render/SKILL.md is about dropped
  * frames, and a mean hides exactly the tail that drops them.
  */
+/** The view half of a Snapshot — everything except the series. */
+function viewFieldsOf(snapshot: Snapshot): Omit<Snapshot, 'series'> {
+  return {
+    scrollPosition: snapshot.scrollPosition,
+    barSpacing: snapshot.barSpacing,
+    priceScaleMode: snapshot.priceScaleMode,
+    revision: snapshot.revision,
+  };
+}
+
 /** Counters for work that is O(series length) and therefore must be memoised. */
 export interface WorkStats {
   /** Chart-type transforms actually run (cache misses). */
@@ -144,6 +155,12 @@ export interface GeometryDump {
   readonly backingStore: Readonly<Record<LayerName, { width: number; height: number }>>;
   readonly cssSize: { width: number; height: number };
   readonly visible: { from: number; to: number; count: number };
+  /**
+   * Bars in the index space that was RENDERED. For a resampling chart type this is the
+   * brick count, which is the whole point of 10.3 and not something the source series
+   * can answer.
+   */
+  readonly barCount: number;
   readonly candles: readonly CandleGeometryDump[];
   readonly frameCount: number;
 }
@@ -608,10 +625,69 @@ export function createChart(o: ChartOptions): Chart {
     return snapshot;
   };
 
+  /**
+   * Renders a resampling chart type (Renko, Kagi, P&F, Line Break, Range) in ITS OWN
+   * index space (10.3).
+   *
+   * These types produce a different number of bars than the source, which is why they
+   * were kept out of the picker: the axis, the autoscale, the crosshair and the drawings
+   * all index the snapshot, so a source-indexed axis under a derived-indexed series
+   * mislabels every bar. Rebuilding the snapshot from the derived bars — with each one's
+   * timestamp resolved back through `sourceIndex` — makes every consumer agree, because
+   * there is exactly one index space again rather than two.
+   *
+   * Volume is zero: a Renko brick is a price move, not a period, so there is no interval
+   * whose volume it could report. §9 skips the pane when vMax is 0, which is the honest
+   * outcome — better than summing an interval the brick does not represent.
+   */
+  let resampledCache: { key: string; snapshot: Snapshot } | null = null;
+  const resampledSnapshot = (base: Snapshot, derived: DerivedSeries, key: string): Snapshot => {
+    const hit = resampledCache;
+    if (hit !== null && hit.key === key) {
+      // Only the view fields can have changed; the bars are keyed and identical.
+      return Object.freeze({ ...hit.snapshot, ...viewFieldsOf(base) });
+    }
+    const source = base.series.bars;
+    const bars: Bar[] = [];
+    for (const brick of derived.bars) {
+      const made = makeBar({
+        t: timeOf(brick, source),
+        o: brick.o,
+        h: brick.h,
+        l: brick.l,
+        c: brick.c,
+        v: 0,
+      });
+      if (made !== null) bars.push(made);
+    }
+    const snapshot: Snapshot = Object.freeze({
+      ...base,
+      series: Object.freeze({ ...base.series, bars }),
+    });
+    resampledCache = { key, snapshot };
+    return snapshot;
+  };
+
   const frame = (mask: DirtyMask): void => {
     const started = performance.now();
+    const baseSnapshot = visibleSnapshot();
+    const revisionKey = dataRevision();
+    const derivedSeries = seriesMemo.compute(
+      revisionKey,
+      features.chartType,
+      features.chartParams,
+      baseSnapshot.series.bars,
+    );
+    const frameSnapshot = derivedSeries.preservesIndexSpace
+      ? baseSnapshot
+      : resampledSnapshot(
+          baseSnapshot,
+          derivedSeries,
+          `${String(revisionKey)}:${features.chartType}:${JSON.stringify(features.chartParams)}`,
+        );
+
     let input = buildFrameInput({
-      snapshot: visibleSnapshot(),
+      snapshot: frameSnapshot,
       layout,
       theme,
       pricePrecision,
@@ -644,9 +720,7 @@ export function createChart(o: ChartOptions): Chart {
         autoscaleCache,
       });
     }
-    const snapshot = input.snapshot;
-    const bars = snapshot.series.bars;
-    const derived = seriesMemo.compute(dataRevision(), features.chartType, features.chartParams, bars);
+    const derived = derivedSeries;
     // The built-in series layer draws candles from the raw bars. Any other chart type is
     // drawn here instead, so its Series bit is stripped exactly as the GL path does.
     const customSeries = features.chartType !== 'candles';
@@ -658,17 +732,24 @@ export function createChart(o: ChartOptions): Chart {
       if ((mask & DirtyFlags.Series) !== 0 && !customSeries) drawGlSeries(input);
     }
 
-    if (customSeries && (mask & DirtyFlags.Series) !== 0 && surfaces.series !== null) {
-      drawDerivedSeries(surfaces.series.ctx, {
+    // In GL mode the series canvas holds a webgl2 context for life, so a Canvas2D chart
+    // type cannot be painted onto it. It goes to the overlay instead — under the drawings
+    // and the crosshair, over the grid, which is the same stacking order as normal.
+    // Before this, switching to any non-candle type with ?gl=1 simply drew nothing.
+    const customTarget = surfaces.series?.ctx ?? surfaces.overlay.ctx;
+    const customBit = surfaces.series === null ? DirtyFlags.Overlay : DirtyFlags.Series;
+    if (customSeries && (mask & customBit) !== 0) {
+      drawDerivedSeries(customTarget, {
         series: derived,
         plot: input.layout.plot,
         theme,
-        // Derived index space: for resampling types the Nth brick is not the Nth bar.
         x: (i) => input.timeScale.x(asBarIndex(i)),
         y: (price) => input.priceScale.y(asPrice(price)),
         barSpacing: input.timeScale.barSpacing,
-        from: derived.preservesIndexSpace ? input.visible.from : 0,
-        to: derived.preservesIndexSpace ? input.visible.to : derived.bars.length - 1,
+        // One index space now: a resampling type's snapshot IS its derived bars, so the
+        // visible range applies directly instead of drawing the whole series every frame.
+        from: input.visible.from,
+        to: input.visible.to,
       });
     }
 
@@ -721,6 +802,16 @@ export function createChart(o: ChartOptions): Chart {
   // Size the layers to the container before the first paint.
   applySize(o.container.clientWidth, o.container.clientHeight);
 
+  /**
+   * Bars in the index space actually being RENDERED.
+   *
+   * For a resampling chart type that is the brick count, not the source bar count, and
+   * everything that positions the view — fit, jump-to-realtime, the scrolled-back badge —
+   * has to use it or those controls aim at an index that is not on screen.
+   */
+  const renderedBarCount = (): number =>
+    lastInput === null ? series.get().bars.length : lastInput.snapshot.series.bars.length;
+
   const geometry = (): GeometryDump | null => {
     const input = lastInput;
     if (input === null) return null;
@@ -749,6 +840,7 @@ export function createChart(o: ChartOptions): Chart {
       backingStore: backing,
       cssSize: { width: surfaces.grid.cssWidth, height: surfaces.grid.cssHeight },
       visible: { from: visible.from, to: visible.to, count: visible.count },
+      barCount: input.snapshot.series.bars.length,
       candles,
       frameCount,
     };
@@ -890,14 +982,13 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.All);
     },
     isScrolledBack() {
-      const count = series.get().bars.length;
-      return view.get().scrollPosition < count - 1 - 0.5;
+      return view.get().scrollPosition < renderedBarCount() - 1 - 0.5;
     },
     scrollToRealtime() {
-      view.setScrollPosition(series.get().bars.length - 1 + rightMargin);
+      view.setScrollPosition(renderedBarCount() - 1 + rightMargin);
     },
     fitAll() {
-      const count = series.get().bars.length;
+      const count = renderedBarCount();
       if (count < 2) return;
       const width = layout.plot.width;
       // Floored at the zoom limit, not at 1.5: with §5.1 aggregation a 100k-bar history
