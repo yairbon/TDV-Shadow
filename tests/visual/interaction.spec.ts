@@ -10,7 +10,8 @@
  * offset makes every drag silently miss and look like broken hit testing.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 interface Anchor {
   readonly barIndex: number;

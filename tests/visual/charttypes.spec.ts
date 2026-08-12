@@ -8,7 +8,8 @@
  * labelling brick 40 as if it were minute 40.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 const RESAMPLING = ['renko', 'kagi', 'point-and-figure', 'line-break', 'range'] as const;
 const PRESERVING = ['candles', 'heikin-ashi', 'line', 'area'] as const;
@@ -74,8 +75,6 @@ test.describe('resampling chart types', () => {
       await open(page);
       await setType(page, type);
       expect(await seriesInk(page)).toBeGreaterThan(500);
-      const errors = await page.evaluate(() => (window as { __errors?: string[] }).__errors ?? []);
-      expect(errors).toEqual([]);
     });
   }
 

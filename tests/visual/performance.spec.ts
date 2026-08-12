@@ -21,7 +21,8 @@
  * written for made panning 100k bars ~20x its proper cost.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 const BUDGET_MS = 8;
 /**

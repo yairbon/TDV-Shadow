@@ -118,6 +118,18 @@ const PANE_COUNT: Readonly<Record<LayoutId, number>> = { '1': 1, '2h': 2, '2v': 
 
 let panes: Pane[] = [];
 let activeIndex = 0;
+
+/**
+ * Replay transport state, declared HERE rather than beside the replay code.
+ *
+ * `setActivePane` stops the transport, and boot calls `setActivePane` while restoring a
+ * saved layout — long before the replay section runs. Leaving these `let`s down there put
+ * them in the temporal dead zone at that moment, and the whole restore died on a
+ * ReferenceError that surfaced only as "the second pane came back on the wrong symbol".
+ */
+const REPLAY_STEP_MS = 700;
+let replayTimer: number | null = null;
+let replaySpeed = 1;
 const activePane = (): Pane => panes[activeIndex];
 
 /** The pane an event landed in; the active one for window-level events during a drag. */
@@ -351,6 +363,13 @@ window.addEventListener('resize', positionLegend);
 
 function setActivePane(index: number): void {
   if (index === activeIndex || index < 0 || index >= panes.length) return;
+  // A half-placed drawing belongs to the pane it was started in. Carrying `pending`
+  // across would build a shape from one anchor in one chart's data space and the next in
+  // another's — a line between two unrelated instruments.
+  pending = [];
+  // Same reasoning for the replay transport: it drives ONE chart, so it must not silently
+  // retarget to whichever pane you clicked next.
+  stopReplayTimer();
   stashActive();
   activeIndex = index;
   adoptActive();
@@ -530,10 +549,21 @@ const chartDialog = createChartDialog();
  */
 function applyChartSettings(next: ChartSettingsForm): void {
   chartSettings = next;
-  const active = currentChart();
-  if (active === null) return;
+  // Every pane: these are global settings, and applying them to the active chart only
+  // left the other panes on different gridlines, precision and candle colours.
+  for (const pane of panes) {
+    const target = pane.index === activeIndex ? currentChart() : pane.chart;
+    if (target !== null) applySettingsTo(target, next);
+  }
+  if (panes.length === 0) {
+    const active = currentChart();
+    if (active !== null) applySettingsTo(active, next);
+  }
+}
+
+function applySettingsTo(target: Chart, next: ChartSettingsForm): void {
   const base = themeName === 'light' ? LIGHT_THEME : DARK_THEME;
-  active.updateSettings({
+  target.updateSettings({
     showGrid: next.showGrid,
     timeZone: next.timeZone,
     pricePrecision: next.pricePrecision,
@@ -834,7 +864,11 @@ function tick(): void {
   // Every pane, not just the active one: a four-pane layout with live data froze three
   // of its charts the moment it stopped being the one you were looking at.
   for (const pane of panes) {
-    const target = pane.index === activeIndex ? chart : pane.chart;
+    const isActive = pane.index === activeIndex;
+    // Real history is not live: fabricating ticks onto a daily series would invent
+    // prices that never traded.
+    if (!(isActive ? loaded.live : pane.loaded.live)) continue;
+    const target = isActive ? chart : pane.chart;
     const current = target?.series.get().bars;
     // Length guard, not an `undefined` check: `noUncheckedIndexedAccess` is off, so the
     // index type is `Bar` and a null test would be dead per types yet live at runtime.
@@ -1906,10 +1940,6 @@ panesHost.addEventListener('contextmenu', (event) => {
  * the cursor are still in the store, so stepping forward is free and leaving replay is
  * instant. This module only owns the transport — the cursor itself lives on the chart.
  */
-const REPLAY_STEP_MS = 700;
-let replayTimer: number | null = null;
-let replaySpeed = 1;
-
 function replayBarCount(): number {
   return currentChart()?.series.get().bars.length ?? 0;
 }

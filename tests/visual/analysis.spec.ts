@@ -7,7 +7,8 @@
  * then zoomed must still span the same bars and the same prices.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 interface Measure {
   readonly from: { readonly barIndex: number; readonly price: number };

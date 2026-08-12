@@ -7,7 +7,8 @@
  * genuinely independent rather than views of the same state.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 /**
  * Clears the workspace BEFORE the app boots, rather than after navigating.
@@ -214,8 +215,6 @@ test.describe('multi-chart layouts', () => {
     expect(await paneCount(page)).toBe(1);
     // The active pane cannot be one that no longer exists.
     expect(await activeIndex(page)).toBe('0');
-    const errors = await page.evaluate(() => (window as { __errors?: string[] }).__errors ?? []);
-    expect(errors).toEqual([]);
   });
 
   test('the crosshair syncs by bar index, not by pixel', async ({ page }) => {

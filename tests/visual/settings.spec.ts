@@ -7,7 +7,8 @@
  * indicator ignores is the same bug wearing a nicer hat.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 interface IndicatorHandle {
   readonly handleId: string;

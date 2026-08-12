@@ -8,7 +8,8 @@
  * listeners never see them and every gesture appears to "work" by doing nothing.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 test.use({
   viewport: { width: 390, height: 844 },

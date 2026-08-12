@@ -11,7 +11,8 @@
  * vertical extent.
  */
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './harness.js';
 
 interface Coverage {
   /** Painted x-columns (device px) in the series layer. */
