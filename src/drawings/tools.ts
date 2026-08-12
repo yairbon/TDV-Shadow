@@ -60,6 +60,9 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   'short-position': define('short-position', 'Short Position', 3, { precision: 2 }),
   'text-note': define('text-note', 'Text', 1, { text: 'Note' }),
   arrow: define('arrow', 'Arrow', 2, { headLength: 12 }),
+  // One anchor, like `horizontal-line`: the direction is fixed (rightwards), so a second
+  // anchor would carry no information the first does not already have.
+  'horizontal-ray': define('horizontal-ray', 'Horizontal Ray', 1),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */

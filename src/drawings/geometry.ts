@@ -186,6 +186,28 @@ export function buildGeometry(
         box: null,
       };
 
+    case 'horizontal-ray':
+      return {
+        ...base,
+        // Rightwards only, from the anchor — not `extendToEdge`, which would need a second
+        // point to take a direction from and would happily run left for a leftward one.
+        segments: [{ from: p0, to: { x: right, y: p0.y } }],
+        // The run starts at the ANCHOR, not at the plot's left edge. Unlike
+        // `horizontal-line`, this level occupies only the plot to the right of its anchor,
+        // and its label belongs at the start of its own run (see `Level.x`).
+        levels: [
+          {
+            price: drawing.anchors[0].price,
+            y: p0.y,
+            label: drawing.anchors[0].price.toFixed(2),
+            x: p0.x,
+          },
+        ],
+        points,
+        labels: [],
+        box: null,
+      };
+
     case 'vertical-line':
       return {
         ...base,

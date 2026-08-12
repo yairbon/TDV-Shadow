@@ -35,6 +35,7 @@ export const DRAWING_KINDS = [
   'short-position',
   'text-note',
   'arrow',
+  'horizontal-ray',
 ] as const;
 
 export type DrawingKind = (typeof DRAWING_KINDS)[number];
