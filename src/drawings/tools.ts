@@ -69,6 +69,16 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   // Two corners. `precision` is the number of decimals in the price delta, matching the
   // position tools; the percentage is always two.
   'price-range': define('price-range', 'Price Range', 2, { precision: 2 }),
+  /*
+   * `barMs` is the timeframe's milliseconds per bar — `TIMEFRAME_MS[tf]` from
+   * `src/data/types.ts`. It has to be a param because `buildGeometry` is given only the
+   * two scales and the plot box; it can convert a bar index to an x, but nothing tells it
+   * how much TIME a bar spans. The caller that creates the drawing should pass the live
+   * timeframe (`store.add('date-range', anchors, { params: { barMs: TIMEFRAME_MS[tf] } })`).
+   * The default of 0 means "unknown", and the annotation then reports the bar count alone
+   * rather than an invented duration.
+   */
+  'date-range': define('date-range', 'Date Range', 2, { barMs: 0 }),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */

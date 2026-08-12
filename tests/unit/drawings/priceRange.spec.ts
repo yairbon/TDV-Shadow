@@ -55,6 +55,14 @@ describe('price-range geometry', () => {
     expect(geometry.labels[0].text).toBe('+0.125 (+0.13%)');
   });
 
+  it('falls back to two decimals when precision is not a finite number', () => {
+    // `toFixed(Infinity)` throws a RangeError, so the finiteness half of the param guard
+    // is the difference between a label and a crashed frame.
+    expect(range(A, B, { precision: Number.POSITIVE_INFINITY }).labels[0].text).toBe(
+      '+20.00 (+20.00%)',
+    );
+  });
+
   it('omits the percentage against a zero start instead of reporting Infinity', () => {
     const geometry = range({ barIndex: 5, price: 0 }, { barIndex: 20, price: 20 });
     expect(geometry.labels[0].text).toBe('+20.00');

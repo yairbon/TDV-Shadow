@@ -38,6 +38,7 @@ export const DRAWING_KINDS = [
   'horizontal-ray',
   'parallel-channel',
   'price-range',
+  'date-range',
 ] as const;
 
 export type DrawingKind = (typeof DRAWING_KINDS)[number];

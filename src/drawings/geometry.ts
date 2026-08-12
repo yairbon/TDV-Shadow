@@ -159,6 +159,33 @@ function priceMoveLabel(from: number, to: number, precision: number): string {
   return `${signed} (${percent > 0 ? '+' : ''}${percent.toFixed(2)}%)`;
 }
 
+/** `2d 3h 15m` — coarse units first, minutes always shown when nothing else is. */
+function durationLabel(ms: number): string {
+  const totalMinutes = Math.round(ms / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${String(days)}d`);
+  if (hours > 0) parts.push(`${String(hours)}h`);
+  if (minutes > 0 || parts.length === 0) parts.push(`${String(minutes)}m`);
+  return parts.join(' ');
+}
+
+/**
+ * `15 bars, 15m` — the measurement a date-range tool exists to show.
+ *
+ * BAR space, from the anchors: the count is `|Δ barIndex|`, so it is unaffected by pan,
+ * zoom or bar spacing, and elapsed time is that count times the timeframe's bar duration.
+ * `barMs === 0` means the caller did not say what a bar is worth, and the duration is then
+ * omitted rather than guessed (see `date-range` in `tools.ts`).
+ */
+function barSpanLabel(fromBar: number, toBar: number, barMs: number): string {
+  const bars = Math.round(Math.abs(toBar - fromBar));
+  const counted = `${String(bars)} ${bars === 1 ? 'bar' : 'bars'}`;
+  return barMs > 0 ? `${counted}, ${durationLabel(bars * barMs)}` : counted;
+}
+
 /** Formats a fib ratio for its label: 0.618 -> "0.618", 1 -> "1". */
 function ratioLabel(ratio: number): string {
   return Number.isInteger(ratio) ? String(ratio) : ratio.toFixed(3).replace(/0+$/, '');
@@ -367,6 +394,27 @@ export function buildGeometry(
               drawing.anchors[0].price,
               drawing.anchors[1].price,
               numberParam(drawing, 'precision', 2),
+            ),
+          },
+        ],
+        box,
+      };
+    }
+
+    case 'date-range': {
+      const box = boxThrough(p0, p1);
+      return {
+        ...base,
+        segments: [],
+        levels: [],
+        points,
+        labels: [
+          {
+            ...centreOf(box),
+            text: barSpanLabel(
+              drawing.anchors[0].barIndex,
+              drawing.anchors[1].barIndex,
+              numberParam(drawing, 'barMs', 0),
             ),
           },
         ],
