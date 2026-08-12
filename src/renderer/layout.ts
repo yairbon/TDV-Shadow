@@ -302,6 +302,57 @@ export function dividerAt(
   return found;
 }
 
+/**
+ * The fractions that result from dragging divider `index` to `y`.
+ *
+ * Pure: takes the current layout and returns new fractions, clamped. Only the divider's
+ * own two neighbours move — the pane below it and whatever is above (the price plot for
+ * divider 0, otherwise the pane above) — so the rest of the stack holds still and the
+ * total is preserved. Feed the result back as `LayoutOptions.paneFractions`.
+ *
+ * `options` must be the options that produced `layout`; `minPlotHeight` and `paneGap`
+ * are read from it. Heights are whole pixels, so the returned fractions reproduce
+ * exactly these heights when the box has not been resized — dragging back to where you
+ * started restores the fractions you started with. A drag past a limit clamps: neither
+ * neighbour ever inverts or drops below its floor.
+ */
+export function resizePane(
+  layout: Layout,
+  options: LayoutOptions,
+  index: number,
+  y: number,
+): readonly number[] {
+  const stack = stackedRects(layout);
+  const contentH = layout.content.height;
+  const fractions = stack.map((rect) => (contentH > 0 ? rect.height / contentH : 0));
+  if (contentH <= 0 || index < 0 || index >= stack.length) return Object.freeze(fractions);
+
+  const gap = Math.round(Math.max(0, options.paneGap));
+  const lower = stack[index];
+  const upper = index === 0 ? layout.plot : stack[index - 1];
+  const upperFloor = index === 0 ? Math.max(0, options.minPlotHeight) : PANE_MIN_HEIGHT;
+  const ceiling = Math.floor(contentH * PANE_MAX_FRACTION);
+
+  // The two neighbours share this many pixels, whatever the divider does.
+  const shared = rectBottom(lower) - upper.top - gap;
+  const cap = Math.max(0, shared);
+  // Floor of the lower pane, raised when the upper pane would breach its own ceiling.
+  const lowerFloor = Math.min(
+    index === 0 ? PANE_MIN_HEIGHT : Math.max(PANE_MIN_HEIGHT, shared - ceiling),
+    cap,
+  );
+  const lowerCeiling = Math.min(Math.max(Math.min(ceiling, shared - upperFloor), lowerFloor), cap);
+  const lowerH = Math.min(
+    Math.max(Math.round(rectBottom(lower) - (y + gap / 2)), lowerFloor),
+    lowerCeiling,
+  );
+
+  const next = fractions.slice();
+  next[index] = lowerH / contentH;
+  if (index > 0) next[index - 1] = (shared - lowerH) / contentH;
+  return Object.freeze(next);
+}
+
 /** Convenience wrapper: densities come from the theme, `showVolume` from the app. */
 export function layoutFromTheme(
   width: number,

@@ -8,6 +8,7 @@ import {
   rectRight,
   dividerAt,
   DIVIDER_TOLERANCE,
+  resizePane,
   PANE_MAX_FRACTION,
   PANE_MIN_HEIGHT,
   type Layout,
@@ -323,5 +324,125 @@ describe('layout — dividerAt', () => {
     expect(dividerAt(layout, first + 18, 20)).toEqual({ index: 1, y: second });
     // Dead centre between the two: the upper one wins, deterministically.
     expect(dividerAt(layout, (first + second) / 2, 20)).toEqual({ index: 0, y: first });
+  });
+});
+
+/** One drag: new fractions, and the layout they produce. */
+function drag(
+  options: LayoutOptions,
+  layout: Layout,
+  index: number,
+  y: number,
+): { fractions: readonly number[]; layout: Layout } {
+  const fractions = resizePane(layout, options, index, y);
+  return { fractions, layout: computeLayout({ ...options, paneFractions: fractions }) };
+}
+
+describe('layout — resizePane', () => {
+  const threePane: LayoutOptions = { ...base, extraPanes: 2 };
+
+  it('puts the divider where it was dragged and leaves the rest of the stack alone', () => {
+    const start = computeLayout(threePane);
+    expect([start.plot.height, ...heightsOf(start)]).toEqual([259, 115, 92, 92]);
+
+    // Divider 0 up 100px: the plot gives, the volume pane takes, indicators hold still.
+    const up = drag(threePane, start, 0, 162);
+    expect(heightsOf(up.layout)).toEqual([215, 92, 92]);
+    expect(up.layout.plot.height).toBe(159);
+    expect(dividerAt(up.layout, 162)).toEqual({ index: 0, y: 162 });
+
+    // Divider 1 down 50px: only the two panes it splits move; the plot is untouched.
+    const down = drag(threePane, start, 1, 433);
+    expect(down.layout.plot.height).toBe(259);
+    expect(heightsOf(down.layout)).toEqual([165, 42, 92]);
+    expect(dividerAt(down.layout, 433)).toEqual({ index: 1, y: 433 });
+    expect(dividerAt(down.layout, 481)).toEqual({ index: 2, y: 481 });
+  });
+
+  it('is reversible: drag away and back restores the original fractions', () => {
+    const start = computeLayout(threePane);
+    const home = [0, 1, 2].map((i) => dividerAt(start, dividerLines(start, 6)[i]));
+    for (const divider of home) {
+      expect(divider).not.toBeNull();
+      if (divider === null) return;
+      for (const delta of [-77, -13, 5, 60]) {
+        const moved = drag(threePane, start, divider.index, divider.y + delta);
+        expect(moved.layout.content.height).toBe(start.content.height);
+        expect(moved.fractions).not.toEqual([115 / 576, 92 / 576, 92 / 576]);
+        // Dragging the divider back to where it started undoes the move exactly, even
+        // when the outward drag was clamped.
+        const back = resizePane(moved.layout, threePane, divider.index, divider.y);
+        expect([...back]).toEqual([115 / 576, 92 / 576, 92 / 576]);
+        expect(JSON.stringify(computeLayout({ ...threePane, paneFractions: back }))).toBe(
+          JSON.stringify(start),
+        );
+      }
+    }
+  });
+
+  it('clamps instead of inverting when dragged past the bottom limit', () => {
+    const start = computeLayout(threePane);
+    for (const y of [600, 5_000]) {
+      const pushed = drag(threePane, start, 0, y);
+      expect(heightsOf(pushed.layout)).toEqual([PANE_MIN_HEIGHT, 92, 92]);
+      expect(pushed.layout.plot.height).toBe(576 - 24 - 92 - 92 - 18);
+      expectTilesContent(pushed.layout, 6);
+    }
+    const middle = drag(threePane, start, 1, 5_000);
+    expect(heightsOf(middle.layout)).toEqual([207 - PANE_MIN_HEIGHT, PANE_MIN_HEIGHT, 92]);
+    expect(middle.layout.plot.height).toBe(259);
+    expectTilesContent(middle.layout, 6);
+  });
+
+  it('clamps instead of inverting when dragged past the top limit', () => {
+    const start = computeLayout(threePane);
+    // Divider 0 stops where the price plot hits minPlotHeight.
+    const top = drag(threePane, start, 0, -5_000);
+    expect(top.layout.plot.height).toBe(base.minPlotHeight);
+    expect(heightsOf(top.layout)).toEqual([294, 92, 92]);
+    expectTilesContent(top.layout, 6);
+
+    // Divider 1 stops where the pane above it would breach PANE_MIN_HEIGHT.
+    const middle = drag(threePane, start, 1, -5_000);
+    expect(heightsOf(middle.layout)).toEqual([PANE_MIN_HEIGHT, 207 - PANE_MIN_HEIGHT, 92]);
+    expect(middle.layout.plot.height).toBe(259);
+  });
+
+  it('stops the upper pane at the ceiling, not only at the plot floor', () => {
+    // 1076px of content: two panes can share 984px, so the 80% ceiling bites first.
+    const tall: LayoutOptions = { ...base, height: 1_100, extraPanes: 1, paneFractions: [0.5, 0.5] };
+    const start = computeLayout(tall);
+    expect(heightsOf(start)).toEqual([492, 492]);
+    expect(start.plot.height).toBe(base.minPlotHeight);
+
+    const pushed = drag(tall, start, 1, 5_000);
+    expect(heightsOf(pushed.layout)).toEqual([Math.floor(1_076 * PANE_MAX_FRACTION), 124]);
+    expect(pushed.layout.plot.height).toBe(base.minPlotHeight);
+    expectTilesContent(pushed.layout, 6);
+  });
+
+  it('returns the current fractions unchanged for an index with no divider', () => {
+    const start = computeLayout(threePane);
+    const current = [115 / 576, 92 / 576, 92 / 576];
+    for (const index of [-1, 3, 99]) {
+      expect([...resizePane(start, threePane, index, 300)]).toEqual(current);
+    }
+    const bare = computeLayout({ ...base, volumePaneFraction: 0 });
+    expect([...resizePane(bare, base, 0, 300)]).toEqual([]);
+  });
+
+  it('never produces a stack that computeLayout has to re-clamp', () => {
+    const start = computeLayout(threePane);
+    for (let index = 0; index < 3; index++) {
+      for (let y = -40; y <= 640; y += 7) {
+        const after = drag(threePane, start, index, y);
+        expectTilesContent(after.layout, 6);
+        expect(heightsOf(after.layout)).toHaveLength(3);
+        expect(after.layout.plot.height).toBeGreaterThanOrEqual(base.minPlotHeight);
+        for (const h of heightsOf(after.layout)) expect(h).toBeGreaterThanOrEqual(PANE_MIN_HEIGHT);
+        // The fractions describe exactly the pixels that came back.
+        expect(after.fractions.map((f) => Math.round(f * 576))).toEqual(heightsOf(after.layout));
+      }
+    }
   });
 });
