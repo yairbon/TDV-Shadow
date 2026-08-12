@@ -432,6 +432,35 @@ describe('layout — resizePane', () => {
     expect(Object.isFrozen(resizePane(start, threePane, 0, 300))).toBe(true);
   });
 
+  it('round-trips through layoutFromTheme', () => {
+    const themed = layoutFromTheme(800, 600, DARK_THEME, true);
+    const volume = themed.volume;
+    expect(volume).not.toBeNull();
+    if (volume === null) return;
+    expect(volume.height).toBe(Math.round(576 * 0.22));
+
+    const dragged = resizePane(
+      themed,
+      {
+        width: 800,
+        height: 600,
+        priceGutterWidth: 64,
+        timeGutterHeight: 24,
+        volumePaneFraction: 0.22,
+        paneGap: 6,
+        minPlotHeight: 80,
+      },
+      0,
+      200,
+    );
+    const after = layoutFromTheme(800, 600, DARK_THEME, true, dragged);
+    expect(dividerAt(after, 200)).toEqual({ index: 0, y: 200 });
+    // Omitting the argument still gives the untouched default.
+    expect(JSON.stringify(layoutFromTheme(800, 600, DARK_THEME, true))).toBe(
+      JSON.stringify(themed),
+    );
+  });
+
   it('returns finite fractions for a collapsed content box', () => {
     // A window collapsed to nothing mid-drag: the divide-by-zero must not leak out.
     const empty = computeLayout({ ...base, width: 20, height: 10 });

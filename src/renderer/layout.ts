@@ -353,12 +353,16 @@ export function resizePane(
   return Object.freeze(next);
 }
 
-/** Convenience wrapper: densities come from the theme, `showVolume` from the app. */
+/**
+ * Convenience wrapper: densities come from the theme, `showVolume` from the app.
+ * `paneFractions` is the user's dragged sizing, if any — omit it for the default stack.
+ */
 export function layoutFromTheme(
   width: number,
   height: number,
   theme: Theme,
   showVolume: boolean,
+  paneFractions?: readonly number[],
 ): Layout {
   const d = theme.density;
   return computeLayout({
@@ -369,5 +373,6 @@ export function layoutFromTheme(
     volumePaneFraction: showVolume ? d.volumePaneFraction : 0,
     paneGap: d.paneGap,
     minPlotHeight: d.minPlotHeight,
+    ...(paneFractions === undefined ? {} : { paneFractions }),
   });
 }
