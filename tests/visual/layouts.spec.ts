@@ -9,12 +9,31 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
+/**
+ * Clears the workspace BEFORE the app boots, rather than after navigating.
+ *
+ * Clearing afterwards only stops a workspace being saved again — it does not stop one
+ * being restored, because boot has already happened. Playwright's per-test context makes
+ * that harmless today; doing it in the right order means it stays harmless if these tests
+ * are ever run in a shared context.
+ */
 async function open(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    try {
+      // Once per test, not once per navigation: `addInitScript` also runs on reload, and
+      // clearing there would wipe the workspace the reload tests exist to check.
+      // sessionStorage survives a reload but not a fresh context, which is exactly that
+      // scope.
+      if (sessionStorage.getItem('tdv-test-cleared') === null) {
+        localStorage.clear();
+        sessionStorage.setItem('tdv-test-cleared', '1');
+      }
+    } catch {
+      /* private mode; nothing to clear */
+    }
+  });
   await page.goto('/');
   await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
-  await page.evaluate(() => {
-    localStorage.clear();
-  });
   await page.waitForTimeout(300);
 }
 
@@ -251,6 +270,181 @@ test.describe('multi-chart layouts', () => {
         return api?.getState().symbol ?? '';
       }),
     ).toBe('DEMO');
+  });
+
+  test('the legend follows the active pane', async ({ page }) => {
+    // It reads the active chart but was pinned to the top-left of the whole plot area, so
+    // it described one chart while sitting on another — and, its indicator rows being
+    // clickable, it swallowed the clicks meant to activate the pane underneath it. That
+    // second half is why clicking pane 0 silently did nothing.
+    await open(page);
+    await setLayout(page, '2h');
+    const leftOf = (): Promise<number> =>
+      page.evaluate(() => {
+        const node = document.querySelector('#legend');
+        return node instanceof HTMLElement ? node.getBoundingClientRect().left : -1;
+      });
+
+    const onPaneZero = await leftOf();
+    await clickPane(page, 1);
+    const onPaneOne = await leftOf();
+    expect(onPaneOne).toBeGreaterThan(onPaneZero + 100);
+
+    // And clicking back is not swallowed.
+    await clickPane(page, 0);
+    expect(await activeIndex(page)).toBe('0');
+    expect(await leftOf()).toBeCloseTo(onPaneZero, 0);
+  });
+
+  test('every pane keeps its own annotations across a reload', async ({ page }) => {
+    // The workspace used to hold ONE chart's state plus a list of pane symbols, so a
+    // reload restored what the other panes were showing and silently dropped every
+    // indicator, drawing and alert on them.
+    await open(page);
+    await setLayout(page, '2h');
+    await clickPane(page, 1);
+    await page.evaluate(() => {
+      const win = window as {
+        __tdv?: {
+          addIndicator: (i: string) => unknown;
+          drawShape: (k: string, a: unknown[], m: string) => unknown;
+        };
+        __chart?: {
+          series: { get: () => { bars: readonly { c: number }[] } };
+          alerts: { add: (s: string, p: number) => unknown };
+        };
+      };
+      const bars = win.__chart?.series.get().bars ?? [];
+      win.__tdv?.addIndicator('sma');
+      win.__tdv?.drawShape(
+        'trendline',
+        [
+          { barIndex: 20, price: bars[20].c },
+          { barIndex: 70, price: bars[70].c },
+        ],
+        'off',
+      );
+      win.__chart?.alerts.add('DEMO', bars[50].c);
+    });
+    await page.waitForTimeout(1200);
+
+    await page.reload();
+    await page.waitForFunction(() => (window as { __tdv?: unknown }).__tdv !== undefined);
+    await page.waitForTimeout(900);
+
+    expect(await paneCount(page)).toBe(2);
+    await clickPane(page, 1);
+    const restored = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          listIndicators: () => readonly unknown[];
+          drawings: { list: () => readonly unknown[] };
+          alerts: { list: () => readonly unknown[] };
+        };
+      }).__chart;
+      return {
+        indicators: chart?.listIndicators().length ?? -1,
+        drawings: chart?.drawings.list().length ?? -1,
+        alerts: chart?.alerts.list().length ?? -1,
+      };
+    });
+    expect(restored).toEqual({ indicators: 1, drawings: 1, alerts: 1 });
+
+    // Pane 0 must not have inherited any of it.
+    await clickPane(page, 0);
+    const untouched = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          listIndicators: () => readonly unknown[];
+          drawings: { list: () => readonly unknown[] };
+        };
+      }).__chart;
+      return {
+        indicators: chart?.listIndicators().length ?? -1,
+        drawings: chart?.drawings.list().length ?? -1,
+      };
+    });
+    expect(untouched).toEqual({ indicators: 0, drawings: 0 });
+  });
+
+  test('an alert names the pane that fired it', async ({ page }) => {
+    // The toast read the module-level symbol, which is the ACTIVE pane's — in a
+    // multi-pane layout usually a different instrument from the one that fired.
+    await open(page);
+    await setLayout(page, '2h');
+    await clickPane(page, 1);
+    await page.selectOption('#symbol-pick', 'AAPL');
+    await page.waitForTimeout(600);
+
+    // Arm an alert on pane 1, then make pane 0 active before firing it.
+    await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          alerts: { add: (s: string, p: number) => unknown };
+          series: { get: () => { bars: readonly { c: number }[] } };
+        };
+      }).__chart;
+      const bars = chart?.series.get().bars ?? [];
+      chart?.alerts.add('AAPL', bars[bars.length - 1].c * 1.02);
+    });
+    await page.waitForTimeout(200);
+
+    await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          series: { get: () => { bars: readonly { t: number; c: number; v: number }[] } };
+          pushTick: (bar: unknown) => void;
+        };
+      }).__chart;
+      if (chart === undefined) return;
+      const bars = chart.series.get().bars;
+      const last = bars[bars.length - 1];
+      const high = last.c * 1.05;
+      chart.pushTick({ t: last.t, o: last.c, h: last.c, l: last.c, c: last.c, v: last.v });
+      chart.pushTick({ t: last.t, o: last.c, h: high, l: last.c, c: high, v: last.v });
+    });
+    await page.waitForTimeout(400);
+
+    const text = await page.locator('#toasts .toast').first().textContent();
+    expect(text).toContain('AAPL');
+  });
+
+  test('live ticks reach every pane, not only the active one', async ({ page }) => {
+    // A four-pane layout with live data used to freeze three of its charts the moment
+    // they stopped being the one you were looking at.
+    await open(page);
+    await setLayout(page, '2h');
+    await clickPane(page, 0);
+
+    /** Last close of each pane, read by activating it — the honest per-pane tick signal. */
+    const lastCloses = async (): Promise<number[]> => {
+      const out: number[] = [];
+      for (const index of [0, 1]) {
+        await clickPane(page, index);
+        out.push(
+          await page.evaluate(() => {
+            const chart = (window as {
+              __chart?: { series: { get: () => { bars: readonly { c: number }[] } } };
+            }).__chart;
+            const bars = chart?.series.get().bars ?? [];
+            return bars.length === 0 ? Number.NaN : bars[bars.length - 1].c;
+          }),
+        );
+      }
+      return out;
+    };
+
+    const before = await lastCloses();
+    await clickPane(page, 0);
+    await page.click('#live-toggle');
+    await page.waitForTimeout(1600);
+    await page.click('#live-toggle');
+    const after = await lastCloses();
+
+    expect(after).toHaveLength(2);
+    expect(after[0]).not.toBe(before[0]);
+    // The one that matters: pane 1 was never active while the ticks were running.
+    expect(after[1]).not.toBe(before[1]);
   });
 
   test('the layout and each pane symbol survive a reload', async ({ page }) => {

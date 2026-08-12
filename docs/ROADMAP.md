@@ -84,19 +84,40 @@ pane owns the toolbar. Crosshair sync broadcasts the bar index, not the pixel.
 
 ---
 
-## Deliberately still open
+## Fixed after the phase work, from an end-to-end pass
 
+Running the built app rather than the tests turned up six defects, all now fixed and
+covered:
+
+- **Derived bars carried no volume.** A brick was built with `v = 0`, so the volume pane
+  vanished and VWAP, Volume and Volume Profile silently produced nothing on five of the
+  fourteen chart types. A brick's volume is the sum of the source bars it spans.
+- **Drawings jumped on a chart-type switch.** Anchors are index-based and a resampling
+  type has its own index space, so bar 400 of the source became brick 400 — a different
+  moment. Anchors are now remapped through TIME across the switch (`src/charts/remap.ts`),
+  which keeps the frozen anchor rule and converts at the boundary.
+- **The legend described one pane while sitting on another.** It reads the active chart
+  but was pinned to the top-left of the whole plot area. Worse, its indicator rows are
+  clickable, so it swallowed the clicks meant to activate the pane underneath — clicking
+  pane 0 simply did nothing once pane 1 had an indicator.
+- **Only the active pane was saved.** The workspace held one chart's state plus a list of
+  pane symbols, so a reload restored what the other panes were showing and dropped every
+  indicator, drawing and alert on them. The schema is per-pane now (version 2).
+- **Alert toasts named the wrong instrument** — they read the active pane's symbol rather
+  than the pane that fired.
+- **Live ticks reached only the active pane**, so a multi-pane layout froze every chart
+  you were not looking at.
+
+## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented
   expression DSL with a real parser, named as itself.
 - **A live symbol universe.** Search over "every ticker" needs a backend this build does
   not have. Search covers bundled symbols plus a live-fetch escape hatch.
 - **Broker/order integration.** Out of scope for a charting library.
-- **Per-pane indicators on a resampling type.** Indicators compute over whatever series is
-  being rendered, which for Renko is the brick series. That is the right answer for most
-  indicators and the wrong one for volume-weighted ones; nothing currently distinguishes
-  them.
-- **Drawings across a chart-type switch.** A drawing anchored to bar 400 of the source
-  series points at brick 400 after switching to Renko. Making annotations survive that
-  needs anchors in TIME rather than in index, which is a change to the frozen drawing
-  contract.
+- **Volume-weighted indicators on a resampling type** are computed over the brick series.
+  With brick volume now summed from the source that is well defined, but a VWAP over
+  Renko is a different statistic from a VWAP over minutes, and nothing says so in the UI.
+- **A drawing survives a chart-type switch but is not pinned to it.** The remap is exact
+  in time and lossy in index — Renko compresses many bars into one brick — so a round trip
+  lands within a brick rather than exactly where it started.

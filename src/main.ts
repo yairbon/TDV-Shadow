@@ -15,7 +15,13 @@ import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { fetchDailySeries } from './app/liveData.js';
 import { installControlApi } from './app/control.js';
-import { clearWorkspace, loadWorkspace, saveWorkspace, type Workspace } from './app/workspace.js';
+import {
+  clearWorkspace,
+  loadWorkspace,
+  saveWorkspace,
+  type PaneState,
+  type Workspace,
+} from './app/workspace.js';
 import { createHistory, type HistoryState } from './app/history.js';
 import { createContextMenu, type MenuEntry } from './ui/contextMenu.js';
 import { createIndicatorDialog } from './ui/indicatorDialog.js';
@@ -145,21 +151,23 @@ function loadSymbol(name: string): Loaded {
  */
 const pinned = params.has('sym') || params.has('spacing') || params.has('scale') || params.has('gl');
 const saved = pinned ? null : loadWorkspace();
+/** Pane 0's saved state; the rest are applied when the layout is restored. */
+const savedPane = saved === null || saved.panes.length === 0 ? null : saved.panes[0];
 
-let symbol = params.get('sym') ?? saved?.symbol ?? 'DEMO';
+let symbol = params.get('sym') ?? savedPane?.symbol ?? 'DEMO';
 let loaded = loadSymbol(symbol);
-let tf: Timeframe = saved?.timeframe ?? loaded.timeframe;
+let tf: Timeframe = savedPane?.timeframe ?? loaded.timeframe;
 let bars: Bar[] = loaded.bars;
-if (saved !== null && loaded.base !== null && saved.timeframe !== '1m') {
-  const resampled = [...resample(loaded.base, '1m', saved.timeframe)];
+if (savedPane !== null && loaded.base !== null && savedPane.timeframe !== '1m') {
+  const resampled = [...resample(loaded.base, '1m', savedPane.timeframe)];
   if (resampled.length > 0) bars = resampled;
 }
 
 let rendererMode: RendererMode = num('gl', 0) === 1 ? 'webgl' : (saved?.renderer ?? 'canvas2d');
 let scaleMode: PriceScaleMode =
-  params.get('scale') === 'log' ? 'log' : (saved?.priceScaleMode ?? 'linear');
+  params.get('scale') === 'log' ? 'log' : (savedPane?.priceScaleMode ?? 'linear');
 let themeName: 'dark' | 'light' = 'dark';
-let inverted = params.get('invert') === '1' || (saved?.priceScaleInverted ?? false);
+let inverted = params.get('invert') === '1' || (savedPane?.priceScaleInverted ?? false);
 
 /** Presentation settings. Colours are stored as chosen, not as a whole theme, so the
  *  dark/light toggle keeps working and only the candle pair is overridden. */
@@ -181,7 +189,7 @@ let chartSettings: ChartSettingsForm = saved?.chartSettings ?? defaultChartSetti
  * a renderer swap. This is the copy that survives those rebuilds; it is refreshed from
  * the store on every change and reloaded into each new chart.
  */
-let alertsJson: string = saved?.alerts ?? '';
+let alertsJson: string = savedPane?.alerts ?? '';
 let chart: Chart | null = null;
 const currentChart = (): Chart | null => chart;
 let restoring = saved !== null;
@@ -219,8 +227,12 @@ function build(scrollPosition?: number, barSpacing?: number): void {
   // chart is rebuilt (theme swap, renderer swap) or it silently resets.
   if (inverted) chart.setPriceInverted(true);
   applyChartSettings(chartSettings);
+  // The pane's OWN symbol is captured here. Reading the module-level `symbol` inside the
+  // listener would name whichever pane happened to be active when the alert fired, which
+  // in a four-pane layout is usually a different instrument entirely.
+  const paneSymbol = symbol;
   chart.onAlert((alert) => {
-    toast(`${symbol} reached ${alert.price.toFixed(chartSettings.pricePrecision)}`);
+    toast(`${paneSymbol} reached ${alert.price.toFixed(chartSettings.pricePrecision)}`);
     status();
   });
   if (alertsJson !== '') chart.alerts.loadJSON(alertsJson);
@@ -293,7 +305,37 @@ function adoptActive(): void {
 
 function markActive(): void {
   for (const pane of panes) pane.host.classList.toggle('active', pane.index === activeIndex);
+  positionLegend();
 }
+
+/**
+ * Moves the OHLC legend over the active pane.
+ *
+ * The legend reads the active chart but was pinned to the top-left of the whole plot
+ * area, so in a multi-pane layout it described one chart while sitting on top of another
+ * — and, because its indicator rows are clickable, it also swallowed the clicks meant to
+ * activate the pane underneath it.
+ */
+function positionLegend(): void {
+  const legendEl = el('#legend');
+  const wrap = el('#chart-wrap');
+  if (legendEl === null || wrap === null || panes.length === 0) return;
+
+  // With one pane the stylesheet already has it right, including the tighter phone
+  // offsets in the media query — and an inline style would silently win over those.
+  if (panes.length === 1) {
+    legendEl.style.removeProperty('left');
+    legendEl.style.removeProperty('top');
+    return;
+  }
+
+  const pane = activePane().host.getBoundingClientRect();
+  const box = wrap.getBoundingClientRect();
+  legendEl.style.left = `${String(Math.round(pane.left - box.left + 12))}px`;
+  legendEl.style.top = `${String(Math.round(pane.top - box.top + 8))}px`;
+}
+
+window.addEventListener('resize', positionLegend);
 
 function setActivePane(index: number): void {
   if (index === activeIndex || index < 0 || index >= panes.length) return;
@@ -308,6 +350,27 @@ function setActivePane(index: number): void {
   renderLegend(null);
   renderReplayBar();
   status();
+}
+
+/**
+ * Applies one saved pane onto a live chart.
+ *
+ * Shared by boot (pane 0) and by the layout restore (the rest), so a non-active pane gets
+ * exactly what the active one does. Before this, only pane 0's state was saved at all and
+ * the other panes came back as empty charts on the right symbol.
+ */
+function restorePane(target: Chart, state: PaneState): void {
+  for (const entry of state.indicators) target.addIndicator(entry.id, entry.params, entry.styles);
+  if (state.drawings !== null) target.drawings.loadJSON(state.drawings);
+  if (state.alerts !== null) target.alerts.loadJSON(state.alerts);
+  if (state.priceScaleMode !== 'linear') target.view.setPriceScaleMode(state.priceScaleMode);
+  if (state.priceScaleInverted) target.setPriceInverted(true);
+  if (state.chartType !== 'candles') target.setChartType(state.chartType);
+  // The view goes LAST: setChartType can change the index space, and a scroll position
+  // restored before that would be a position in the wrong one.
+  if (Number.isFinite(state.scrollPosition) && state.barSpacing > 0) {
+    target.view.update({ barSpacing: state.barSpacing, scrollPosition: state.scrollPosition });
+  }
 }
 
 function newPane(index: number): Pane {
@@ -735,12 +798,17 @@ let liveTimer: number | null = null;
 const rnd = lcg(seed + 1);
 
 function tick(): void {
-  const current = chart?.series.get().bars;
-  // Length guard, not an `undefined` check: `noUncheckedIndexedAccess` is off, so the
-  // index type is `Bar` and a null test would be dead per types yet live at runtime.
-  if (current === undefined || current.length === 0) return;
-  const next = nextTick(current[current.length - 1], rnd);
-  if (next !== null) chart?.pushTick(next);
+  // Every pane, not just the active one: a four-pane layout with live data froze three
+  // of its charts the moment it stopped being the one you were looking at.
+  for (const pane of panes) {
+    const target = pane.index === activeIndex ? chart : pane.chart;
+    const current = target?.series.get().bars;
+    // Length guard, not an `undefined` check: `noUncheckedIndexedAccess` is off, so the
+    // index type is `Bar` and a null test would be dead per types yet live at runtime.
+    if (target === null || current === undefined || current.length === 0) continue;
+    const next = nextTick(current[current.length - 1], rnd);
+    if (next !== null) target.pushTick(next);
+  }
   renderLegend(null);
 }
 
@@ -1053,18 +1121,11 @@ switchSymbol(symbol);
 // Read through a function so TypeScript does not narrow `chart` to `never` here: it
 // cannot see that build() assigns it, and a `!` is ruled out by mandate #6.
 const booted = currentChart();
-if (restoring && saved !== null && booted !== null) {
+if (restoring && savedPane !== null && booted !== null) {
   restoring = false;
-  for (const entry of saved.indicators) booted.addIndicator(entry.id, entry.params, entry.styles);
-  if (saved.drawings !== null) booted.drawings.loadJSON(saved.drawings);
-  if (Number.isFinite(saved.scrollPosition) && saved.barSpacing > 0) {
-    booted.view.update({ barSpacing: saved.barSpacing, scrollPosition: saved.scrollPosition });
-  }
-  if (saved.chartType !== 'candles') {
-    booted.setChartType(saved.chartType);
-    const picker = sel('#chart-type');
-    if (picker !== null) picker.value = saved.chartType;
-  }
+  restorePane(booted, savedPane);
+  const picker = sel('#chart-type');
+  if (picker !== null) picker.value = savedPane.chartType;
   renderLegend(null);
 }
 if (typeSelect !== null) typeSelect.value = 'candles';
@@ -1078,12 +1139,13 @@ if (saved !== null && saved.layout !== '1') {
   setLayout(saved.layout);
   for (const pane of panes) {
     // Index guard rather than an undefined check: `noUncheckedIndexedAccess` is off, so
-    // the index type is `string` and a null test reads as dead code to the linter.
-    if (pane.index === 0 || pane.index >= saved.paneSymbols.length) continue;
-    const wanted = saved.paneSymbols[pane.index];
-    if (wanted === pane.symbol) continue;
+    // the index type is `PaneState` and a null test reads as dead code to the linter.
+    if (pane.index === 0 || pane.index >= saved.panes.length) continue;
+    const state = saved.panes[pane.index];
     setActivePane(pane.index);
-    switchSymbol(wanted);
+    if (state.symbol !== symbol) switchSymbol(state.symbol);
+    const target = currentChart();
+    if (target !== null) restorePane(target, state);
   }
   setActivePane(0);
 }
@@ -1294,42 +1356,51 @@ window.setInterval(() => {
 let saveTimer: number | null = null;
 
 /** One description of what a saved workspace IS, so the two save paths cannot drift. */
-function snapshotWorkspace(active: Chart): Workspace {
-  const view = active.view.get();
+function paneStateOf(pane: Pane): PaneState | null {
+  // The active pane's live state lives in the module variables, not in its record.
+  const isActive = pane.index === activeIndex;
+  const target = isActive ? chart : pane.chart;
+  if (target === null) return null;
+  const view = target.view.get();
   return {
-    symbol,
-    timeframe: tf,
-    chartType: active.chartType(),
+    symbol: isActive ? symbol : pane.symbol,
+    timeframe: isActive ? tf : pane.tf,
+    chartType: target.chartType(),
     priceScaleMode: view.priceScaleMode,
-    priceScaleInverted: inverted,
-    renderer: rendererMode,
-    indicators: active.listIndicators().map((i) => ({
+    priceScaleInverted: isActive ? inverted : pane.inverted,
+    indicators: target.listIndicators().map((i) => ({
       id: i.id,
       params: i.params,
       styles: i.styles,
     })),
-    drawings: active.drawings.list().length > 0 ? active.drawings.toJSON() : null,
+    drawings: target.drawings.list().length > 0 ? target.drawings.toJSON() : null,
+    alerts: target.alerts.list().length > 0 ? target.alerts.toJSON() : null,
     barSpacing: view.barSpacing,
     scrollPosition: view.scrollPosition,
-    chartSettings,
-    alerts: active.alerts.list().length > 0 ? active.alerts.toJSON() : null,
-    layout,
-    paneSymbols: panes.map((pane) => (pane.index === activeIndex ? symbol : pane.symbol)),
   };
+}
+
+function snapshotWorkspace(): Workspace | null {
+  const states = panes.flatMap((pane) => {
+    const state = paneStateOf(pane);
+    return state === null ? [] : [state];
+  });
+  if (states.length === 0) return null;
+  return { panes: states, layout, renderer: rendererMode, chartSettings };
 }
 
 function persist(): void {
   if (saveTimer !== null) window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
-    const active = currentChart();
-    if (active !== null) saveWorkspace(snapshotWorkspace(active));
+    const workspace = snapshotWorkspace();
+    if (workspace !== null) saveWorkspace(workspace);
   }, 400);
 }
 
 window.setInterval(persist, 2000);
 window.addEventListener('beforeunload', () => {
-  const active = currentChart();
-  if (active !== null) saveWorkspace(snapshotWorkspace(active));
+  const workspace = snapshotWorkspace();
+  if (workspace !== null) saveWorkspace(workspace);
 });
 
 el('#reset-workspace')?.addEventListener('click', () => {

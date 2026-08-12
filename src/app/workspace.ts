@@ -18,16 +18,21 @@ import { TIMEFRAMES, type PriceScaleMode, type Timeframe } from '../data/types.j
 import type { PlotStyles, PlotStyleOverride } from '../renderer/layers/annotationsLayer.js';
 
 const KEY = 'tdv-shadow.workspace';
-const VERSION = 1;
+/**
+ * Bumped to 2 when the schema became per-pane (10.4). A version-1 payload described one
+ * chart and is discarded rather than half-migrated — the loader's contract is that a
+ * payload it cannot fully understand is not applied at all.
+ */
+const VERSION = 2;
 
-export interface Workspace {
+/** Everything one pane remembers. Panes are independent charts, so this is per pane. */
+export interface PaneState {
   readonly symbol: string;
   readonly timeframe: Timeframe;
   readonly chartType: ChartType;
   readonly priceScaleMode: PriceScaleMode;
   /** §2.1 price-axis inversion. */
   readonly priceScaleInverted: boolean;
-  readonly renderer: 'canvas2d' | 'webgl';
   readonly indicators: readonly {
     readonly id: IndicatorId;
     readonly params: IndicatorParams;
@@ -35,16 +40,27 @@ export interface Workspace {
   }[];
   /** Serialised drawing store, or null when there are none. */
   readonly drawings: string | null;
-  readonly barSpacing: number;
-  readonly scrollPosition: number;
-  /** Presentation settings (8.3). Null when the payload predates them. */
-  readonly chartSettings: ChartSettings | null;
   /** Serialised alert store (9.2), or null when there are none. */
   readonly alerts: string | null;
+  readonly barSpacing: number;
+  readonly scrollPosition: number;
+}
+
+export interface Workspace {
+  /**
+   * One entry per pane, in pane order.
+   *
+   * Before this the workspace held a single chart's state plus a list of pane SYMBOLS, so
+   * a reload restored what the other panes were showing but silently dropped every
+   * indicator, drawing and alert on them.
+   */
+  readonly panes: readonly PaneState[];
   /** Multi-chart layout (10.4). */
   readonly layout: '1' | '2h' | '2v' | '4';
-  /** One symbol per pane, in pane order. Shorter than the layout implies is fine. */
-  readonly paneSymbols: readonly string[];
+  /** Renderer choice is global: it is a capability of the build, not of a chart. */
+  readonly renderer: 'canvas2d' | 'webgl';
+  /** Presentation settings (8.3). Null when the payload predates them. */
+  readonly chartSettings: ChartSettings | null;
 }
 
 /** Mirrors `ChartSettingsForm` in ui/chartDialog, kept structural to avoid a UI import. */
@@ -157,25 +173,45 @@ export function loadWorkspace(): Workspace | null {
 
   const record = parsed as Record<string, unknown>;
   if (record['version'] !== VERSION) return null;
+  const rawPanes = record['panes'];
+  if (!Array.isArray(rawPanes)) return null;
+
+  const panes = rawPanes.flatMap((entry) => {
+    const pane = readPane(entry);
+    return pane === null ? [] : [pane];
+  });
+  // A workspace with no usable pane is not a workspace; falling back to defaults beats
+  // booting into an empty grid.
+  if (panes.length === 0) return null;
+
+  const renderer = record['renderer'];
+  return {
+    panes: panes.slice(0, 4),
+    layout: readLayout(record['layout']),
+    renderer: renderer === 'webgl' ? 'webgl' : 'canvas2d',
+    chartSettings: readChartSettings(record['chartSettings']),
+  };
+}
+
+/** One pane, validated field by field. Returns null when it cannot be trusted. */
+function readPane(value: unknown): PaneState | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
   if (typeof record['symbol'] !== 'string') return null;
   if (!isTimeframe(record['timeframe'])) return null;
   if (!isChartType(record['chartType'])) return null;
 
   const mode = record['priceScaleMode'];
-  const renderer = record['renderer'];
   const indicators = Array.isArray(record['indicators']) ? record['indicators'] : [];
 
   return {
     symbol: record['symbol'],
     timeframe: record['timeframe'],
     chartType: record['chartType'],
-    priceScaleMode:
-      mode === 'log' || mode === 'percent' || mode === 'linear' ? mode : 'linear',
-    // Defaulted rather than rejected: a payload written before this field existed is
-    // still perfectly usable, and discarding a whole workspace over one boolean is worse
+    priceScaleMode: mode === 'log' || mode === 'percent' || mode === 'linear' ? mode : 'linear',
+    // Defaulted rather than rejected: discarding a whole pane over one boolean is worse
     // than starting it the right way up.
     priceScaleInverted: record['priceScaleInverted'] === true,
-    renderer: renderer === 'webgl' ? 'webgl' : 'canvas2d',
     indicators: indicators.flatMap((entry) => {
       if (typeof entry !== 'object' || entry === null) return [];
       const item = entry as Record<string, unknown>;
@@ -190,17 +226,12 @@ export function loadWorkspace(): Workspace | null {
       ];
     }),
     drawings: typeof record['drawings'] === 'string' ? record['drawings'] : null,
-    barSpacing: typeof record['barSpacing'] === 'number' ? record['barSpacing'] : 8,
-    scrollPosition:
-      typeof record['scrollPosition'] === 'number' ? record['scrollPosition'] : Number.NaN,
-    chartSettings: readChartSettings(record['chartSettings']),
     // Validated by the alert store's own loadJSON, which drops bad entries field by
     // field; storing it as a string keeps one owner for that schema.
     alerts: typeof record['alerts'] === 'string' ? record['alerts'] : null,
-    layout: readLayout(record['layout']),
-    paneSymbols: Array.isArray(record['paneSymbols'])
-      ? record['paneSymbols'].filter((s): s is string => typeof s === 'string').slice(0, 4)
-      : [],
+    barSpacing: typeof record['barSpacing'] === 'number' ? record['barSpacing'] : 8,
+    scrollPosition:
+      typeof record['scrollPosition'] === 'number' ? record['scrollPosition'] : Number.NaN,
   };
 }
 

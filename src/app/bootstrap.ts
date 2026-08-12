@@ -48,6 +48,7 @@ import { snapPixel, type SnapResult } from '../drawings/magnet.js';
 import type { Anchor, MagnetMode } from '../drawings/types.js';
 import { createDrawingStore, type DrawingStore } from '../drawings/store.js';
 import { timeOf, type ChartType, type ChartTypeParams, type DerivedSeries } from '../charts/types.js';
+import { remapIndex } from '../charts/remap.js';
 import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
 import {
   createFeatureState,
@@ -645,9 +646,7 @@ export function createChart(o: ChartOptions): Chart {
    * timestamp resolved back through `sourceIndex` — makes every consumer agree, because
    * there is exactly one index space again rather than two.
    *
-   * Volume is zero: a Renko brick is a price move, not a period, so there is no interval
-   * whose volume it could report. §9 skips the pane when vMax is 0, which is the honest
-   * outcome — better than summing an interval the brick does not represent.
+   * A brick's volume is the sum of the source bars it spans; see the loop below.
    */
   let resampledCache: { key: string; snapshot: Snapshot } | null = null;
   const resampledSnapshot = (base: Snapshot, derived: DerivedSeries, key: string): Snapshot => {
@@ -658,14 +657,27 @@ export function createChart(o: ChartOptions): Chart {
     }
     const source = base.series.bars;
     const bars: Bar[] = [];
+    // Volume is the SUM of the source bars the brick spans, not zero.
+    //
+    // A brick covers (previous brick's sourceIndex, this brick's sourceIndex], so that
+    // sum is exactly the volume traded while the brick formed — well defined, and what
+    // every volume-weighted indicator needs. Zeroing it (the first attempt here) made the
+    // volume pane vanish and left VWAP, Volume and Volume Profile silently producing
+    // nothing on five of the fourteen chart types.
+    let previousSource = -1;
     for (const brick of derived.bars) {
+      const end = Math.min(source.length - 1, brick.sourceIndex);
+      let volume = 0;
+      for (let i = Math.max(0, previousSource + 1); i <= end; i++) volume += source[i].v;
+      previousSource = end;
+
       const made = makeBar({
         t: timeOf(brick, source),
         o: brick.o,
         h: brick.h,
         l: brick.l,
         c: brick.c,
-        v: 0,
+        v: volume,
       });
       if (made !== null) bars.push(made);
     }
@@ -675,6 +687,38 @@ export function createChart(o: ChartOptions): Chart {
     });
     resampledCache = { key, snapshot };
     return snapshot;
+  };
+
+  /**
+   * Timestamp per index for a chart type, without rendering it.
+   *
+   * This is the index space a switch is moving between: the source bar times when the
+   * type preserves index space, and the derived bars' resolved times when it does not.
+   */
+  const indexTimes = (type: ChartType, params: ChartTypeParams): number[] => {
+    const source = series.get().bars;
+    const derived = seriesMemo.compute(dataRevision(), type, params, source);
+    if (derived.preservesIndexSpace) return source.map((bar) => bar.t);
+    return derived.bars.map((brick) => timeOf(brick, source));
+  };
+
+  /** Moves every index-anchored annotation from one index space to another. */
+  const remapAnnotations = (from: readonly number[], to: readonly number[]): void => {
+    if (from.length < 2 || to.length < 2) return;
+    for (const drawing of drawings.list()) {
+      const anchors = drawing.anchors.map((a) => ({
+        barIndex: remapIndex(from, to, a.barIndex),
+        price: a.price,
+      }));
+      drawings.update(drawing.id, { anchors });
+    }
+    const active = measure;
+    if (active !== null) {
+      measure = {
+        from: { barIndex: remapIndex(from, to, active.from.barIndex), price: active.from.price },
+        to: { barIndex: remapIndex(from, to, active.to.barIndex), price: active.to.price },
+      };
+    }
   };
 
   /**
@@ -891,8 +935,14 @@ export function createChart(o: ChartOptions): Chart {
     },
     chartType: () => features.chartType,
     setChartType(type, params) {
+      // Anchors are remapped through TIME across the switch. Without this a drawing on
+      // bar 400 of the source lands on brick 400 of a Renko series — a different moment
+      // entirely — which reads as the annotations having been lost.
+      const before = indexTimes(features.chartType, features.chartParams);
       features.chartType = type;
       features.chartParams = params ?? {};
+      const after = indexTimes(type, features.chartParams);
+      remapAnnotations(before, after);
       scheduler.invalidate(DirtyFlags.All);
     },
     addIndicator(id, params = {}, styles = {}) {

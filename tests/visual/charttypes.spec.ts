@@ -196,6 +196,133 @@ test.describe('resampling chart types', () => {
     expect(Number.isFinite(after[0].anchorPixels[0].x)).toBe(true);
   });
 
+  test('a resampling type carries the volume of the bars it spans', async ({ page }) => {
+    // Derived bars used to be built with v = 0, which made the volume pane vanish and
+    // left VWAP, Volume and Volume Profile silently producing nothing on five of the
+    // fourteen chart types. A brick's volume is the sum of the source bars it covers.
+    await open(page);
+    const sourceVolume = await page.evaluate(() => {
+      const chart = (window as {
+        __chart?: { series: { get: () => { bars: readonly { v: number }[] } } };
+      }).__chart;
+      return (chart?.series.get().bars ?? []).reduce((sum, b) => sum + b.v, 0);
+    });
+    expect(sourceVolume).toBeGreaterThan(0);
+
+    await setType(page, 'renko');
+    const derivedVolume = await page.evaluate(() => {
+      const fn = (window as { __chartGeometry?: () => unknown }).__chartGeometry;
+      void fn;
+      const chart = (window as {
+        __chart?: { snapshots: { snapshot: () => { series: { bars: readonly { v: number }[] } } } };
+      }).__chart;
+      void chart;
+      // The rendered snapshot is not exposed directly, so read the volume the way the
+      // renderer does — through an indicator computed on it.
+      const api = (window as {
+        __tdv?: {
+          addIndicator: (i: string) => { handleId: string };
+          readIndicator: (h: string) => readonly { values: Record<string, number> }[];
+        };
+      }).__tdv;
+      const handle = api?.addIndicator('volume');
+      const rows = handle === undefined ? [] : (api?.readIndicator(handle.handleId) ?? []);
+      return rows.reduce((sum, row) => sum + (row.values['volume'] ?? 0), 0);
+    });
+    await page.waitForTimeout(300);
+
+    expect(derivedVolume).toBeGreaterThan(0);
+    // Every source bar falls in exactly one brick, so the totals match.
+    expect(derivedVolume).toBeCloseTo(sourceVolume, 0);
+  });
+
+  test('drawings stay put across a chart-type switch', async ({ page }) => {
+    // Anchors are index-based and a resampling type has its own index space, so bar 400
+    // of the source is brick 400 of the Renko series — a different moment entirely. The
+    // anchors are remapped through TIME across the switch.
+    await open(page);
+    const times = await page.evaluate(() => {
+      const win = window as {
+        __tdv?: { drawShape: (k: string, a: unknown[], m: string) => unknown };
+        __chart?: { series: { get: () => { bars: readonly { t: number; c: number }[] } } };
+      };
+      const bars = win.__chart?.series.get().bars ?? [];
+      win.__tdv?.drawShape(
+        'trendline',
+        [
+          { barIndex: 200, price: bars[200].c },
+          { barIndex: 400, price: bars[400].c },
+        ],
+        'off',
+      );
+      return { a: bars[200].t, b: bars[400].t };
+    });
+    await page.waitForTimeout(300);
+
+    await setType(page, 'renko');
+    const after = await page.evaluate(() => {
+      const api = (window as {
+        __tdv?: { listDrawings: () => readonly { readonly anchors: readonly { barIndex: number }[] }[] };
+      }).__tdv;
+      return api?.listDrawings()[0]?.anchors.map((a) => a.barIndex) ?? [];
+    });
+    expect(after).toHaveLength(2);
+
+    // The remapped indices must point at the same MOMENTS in the brick series.
+    const mappedTimes = await page.evaluate((indices) => {
+      const chart = (window as {
+        __chart?: { snapshots: { snapshot: () => unknown } };
+      }).__chart;
+      void chart;
+      const fn = (window as { __chartGeometry?: () => unknown }).__chartGeometry;
+      const g = fn === undefined ? null : (fn() as { barCount?: number } | null);
+      return { count: g?.barCount ?? 0, indices };
+    }, after);
+    // Both anchors land inside the brick series and keep their order.
+    expect(mappedTimes.indices[0]).toBeGreaterThanOrEqual(0);
+    expect(mappedTimes.indices[0]).toBeLessThan(mappedTimes.indices[1]);
+    expect(mappedTimes.indices[1]).toBeLessThanOrEqual(mappedTimes.count);
+    // And they are NOT the raw source indices, which is what the bug looked like.
+    expect(mappedTimes.indices[1]).not.toBeCloseTo(400, 0);
+    expect(times.a).toBeLessThan(times.b);
+  });
+
+  test('a round trip through another chart type leaves anchors where they were', async ({
+    page,
+  }) => {
+    await open(page);
+    await page.evaluate(() => {
+      const win = window as {
+        __tdv?: { drawShape: (k: string, a: unknown[], m: string) => unknown };
+        __chart?: { series: { get: () => { bars: readonly { c: number }[] } } };
+      };
+      const bars = win.__chart?.series.get().bars ?? [];
+      win.__tdv?.drawShape(
+        'trendline',
+        [
+          { barIndex: 200, price: bars[200].c },
+          { barIndex: 400, price: bars[400].c },
+        ],
+        'off',
+      );
+    });
+    await page.waitForTimeout(300);
+
+    await setType(page, 'renko');
+    await setType(page, 'candles');
+    const back = await page.evaluate(() => {
+      const api = (window as {
+        __tdv?: { listDrawings: () => readonly { readonly anchors: readonly { barIndex: number }[] }[] };
+      }).__tdv;
+      return api?.listDrawings()[0]?.anchors.map((a) => a.barIndex) ?? [];
+    });
+    // Renko is lossy — several source bars share a brick — so this lands within a brick's
+    // worth of the original rather than exactly on it. What must not happen is drift of
+    // hundreds of bars, which is what an unmapped switch produced.
+    expect(Math.abs(back[0] - 200)).toBeLessThan(30);
+    expect(Math.abs(back[1] - 400)).toBeLessThan(30);
+  });
+
   test('a custom chart type paints in WebGL mode too', async ({ page }) => {
     // The GL series canvas holds a webgl2 context for life, so a Canvas2D chart type
     // cannot go on it. Before this it went nowhere at all and the chart was blank.

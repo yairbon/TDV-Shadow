@@ -250,6 +250,8 @@
 
       /* Legend text over the plot is explicitly allowed chrome (root mandate #1); the
          candles themselves remain canvas-only. */
+      /* top/left are set from JS so the legend sits over the ACTIVE pane; these are the
+         single-pane defaults, used before the first layout pass. */
       #legend {
         position: absolute;
         top: 8px;
