@@ -122,6 +122,67 @@ function expectTilesContent(layout: Layout, gap: number): void {
   expect(layout.plot.height).toBeGreaterThanOrEqual(0);
 }
 
+describe('layout — the optional left gutter', () => {
+  const withLeft: LayoutOptions = { ...base, leftPriceGutterWidth: 48, extraPanes: 1 };
+
+  it('is absent unless asked for, and absent when asked for zero', () => {
+    expect(computeLayout(base).leftPriceGutter).toBeNull();
+    expect(computeLayout({ ...base, leftPriceGutterWidth: 0 }).leftPriceGutter).toBeNull();
+    // Negative is not "shift everything left"; it is nothing.
+    expect(computeLayout({ ...base, leftPriceGutterWidth: -20 }).leftPriceGutter).toBeNull();
+  });
+
+  it('takes its width from the content rather than from the window', () => {
+    const bare = computeLayout({ ...base, extraPanes: 1 });
+    const layout = computeLayout(withLeft);
+    const gutter = layout.leftPriceGutter;
+    expect(gutter).not.toBeNull();
+    if (gutter === null) return;
+
+    expect(gutter.left).toBe(0);
+    expect(gutter.width).toBe(48);
+    // Width came out of the plot, not out of thin air: the window is unchanged, the right
+    // gutter keeps its size, and every content rect is exactly 48px narrower.
+    expect(rectRight(layout.priceGutter)).toBe(rectRight(bare.priceGutter));
+    expect(layout.priceGutter.width).toBe(bare.priceGutter.width);
+    expect(layout.content.width).toBe(bare.content.width - 48);
+    expect(layout.plot.width).toBe(bare.plot.width - 48);
+    expect(layout.timeGutter.width).toBe(bare.timeGutter.width - 48);
+  });
+
+  it('starts every pane to the right of it, with nothing straddling the axis', () => {
+    const layout = computeLayout(withLeft);
+    const gutter = layout.leftPriceGutter;
+    if (gutter === null) throw new Error('expected a left gutter');
+
+    expect(layout.content.left).toBe(rectRight(gutter));
+    expect(layout.plot.left).toBe(rectRight(gutter));
+    expect(layout.timeGutter.left).toBe(rectRight(gutter));
+    expect(layout.volume?.left).toBe(rectRight(gutter));
+    for (const pane of layout.panes) expect(pane.left).toBe(rectRight(gutter));
+    expectTilesContent(layout, 6);
+  });
+
+  it('spans the panes but not the time axis', () => {
+    // It is a price axis: running it down past the time gutter would put a price label
+    // beside a row that holds dates.
+    const layout = computeLayout(withLeft);
+    const gutter = layout.leftPriceGutter;
+    if (gutter === null) throw new Error('expected a left gutter');
+    expect(gutter.top).toBe(0);
+    expect(rectBottom(gutter)).toBe(rectBottom(layout.content));
+    expect(rectBottom(gutter)).toBe(layout.timeGutter.top);
+  });
+
+  it('never eats the plot when the window is too narrow to hold it', () => {
+    const narrow = computeLayout({ ...base, width: 80, leftPriceGutterWidth: 400 });
+    expect(narrow.plot.width).toBeGreaterThanOrEqual(0);
+    expect(narrow.content.width).toBeGreaterThanOrEqual(0);
+    const gutter = narrow.leftPriceGutter;
+    if (gutter !== null) expect(rectRight(gutter)).toBeLessThanOrEqual(80);
+  });
+});
+
 describe('layout — per-pane sizing', () => {
   // Captured from the implementation that predates `paneFractions`. These are the
   // numbers the screenshot baselines were taken against: they must not move.

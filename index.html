@@ -1056,6 +1056,10 @@
         <select id="compare-pick" class="tb" aria-label="Compare symbol" title="Compare a second symbol"
           data-overflow="6"></select>
 
+        <!-- Shown only while a comparison exists; see syncCompareScaleButton in main.ts. -->
+        <button id="compare-scale" class="tb hide-sm" type="button" aria-pressed="false" hidden
+          title="Show the comparison on its own price axis" data-overflow="6">±%</button>
+
         <span class="divider"></span>
         <button id="scale-log" data-overflow="8" class="tb" type="button" aria-pressed="false" title="Logarithmic price scale">log</button>
         <button id="renderer-webgl" data-overflow="7" class="tb" type="button" aria-pressed="false" title="Render the series on the GPU">GPU</button>

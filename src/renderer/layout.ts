@@ -76,6 +76,14 @@ export interface Layout {
   readonly panes: readonly Rect[];
   /** Right-hand price axis gutter, spanning plot + volume. */
   readonly priceGutter: Rect;
+  /**
+   * Left-hand price gutter, or null when nothing is assigned to a second scale.
+   *
+   * Null rather than a zero-width rect so a caller cannot accidentally draw into it: an
+   * empty gutter and an absent one are different states, and only one of them should have
+   * axis labels rendered for it.
+   */
+  readonly leftPriceGutter: Rect | null;
   /** Bottom time axis gutter, spanning the content width. */
   readonly timeGutter: Rect;
 }
@@ -84,6 +92,8 @@ export interface LayoutOptions {
   readonly width: number;
   readonly height: number;
   readonly priceGutterWidth: number;
+  /** 0 (the default) means no left axis at all. */
+  readonly leftPriceGutterWidth?: number;
   readonly timeGutterHeight: number;
   /** 0 (or too little room) drops the volume pane entirely. */
   readonly volumePaneFraction: number;
@@ -220,9 +230,15 @@ export function computeLayout(o: LayoutOptions): Layout {
   const height = Math.max(0, Math.round(o.height));
 
   const gutterW = Math.min(Math.round(Math.max(0, o.priceGutterWidth)), width);
+  // The left gutter eats into the content the same way the right one does, and is capped
+  // so the two together can never leave a negative plot width.
+  const leftW = Math.min(
+    Math.round(Math.max(0, o.leftPriceGutterWidth ?? 0)),
+    Math.max(0, width - gutterW - 1),
+  );
   const gutterH = Math.min(Math.round(Math.max(0, o.timeGutterHeight)), height);
 
-  const contentW = width - gutterW;
+  const contentW = width - gutterW - leftW;
   const contentH = height - gutterH;
 
   const gap = Math.round(Math.max(0, o.paneGap));
@@ -241,24 +257,25 @@ export function computeLayout(o: LayoutOptions): Layout {
 
   // Positions depend on the final plot height, so lay them out after it settles.
   let cursor = plotH + gap;
-  const volume = volumeH > 0 ? makeRect(0, cursor, contentW, volumeH) : null;
+  const volume = volumeH > 0 ? makeRect(leftW, cursor, contentW, volumeH) : null;
   if (volumeH > 0) cursor += volumeH + gap;
   const placed = paneHeights.map((paneH) => {
-    const rect = makeRect(0, cursor, contentW, paneH);
+    const rect = makeRect(leftW, cursor, contentW, paneH);
     cursor += paneH + gap;
     return rect;
   });
 
-  const plot = makeRect(0, 0, contentW, plotH);
+  const plot = makeRect(leftW, 0, contentW, plotH);
 
   return Object.freeze({
     viewport: makeRect(0, 0, width, height),
-    content: makeRect(0, 0, contentW, contentH),
+    content: makeRect(leftW, 0, contentW, contentH),
     plot,
     volume,
     panes: Object.freeze(placed),
-    priceGutter: makeRect(contentW, 0, gutterW, contentH),
-    timeGutter: makeRect(0, contentH, contentW, gutterH),
+    priceGutter: makeRect(leftW + contentW, 0, gutterW, contentH),
+    leftPriceGutter: leftW > 0 ? makeRect(0, 0, leftW, contentH) : null,
+    timeGutter: makeRect(leftW, contentH, contentW, gutterH),
   });
 }
 

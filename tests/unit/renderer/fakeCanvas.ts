@@ -31,6 +31,12 @@ export interface RecordedCall {
   readonly strokeStyle: string;
   readonly lineWidth: number;
   readonly globalAlpha: number;
+  /**
+   * The alignment in force when the call was made. `fillText` places text relative to it,
+   * so an x argument alone does not say where the glyphs land — a right-aligned label at
+   * x=64 occupies the pixels a left-aligned one at x=64 leaves empty.
+   */
+  readonly textAlign: string;
 }
 
 interface SavedState {
@@ -38,6 +44,7 @@ interface SavedState {
   readonly strokeStyle: string;
   readonly lineWidth: number;
   readonly globalAlpha: number;
+  readonly textAlign: string;
 }
 
 /** Width per character used by `measureText`; keeps label maths deterministic. */
@@ -67,6 +74,7 @@ export class FakeContext {
       strokeStyle: this.strokeStyle,
       lineWidth: this.lineWidth,
       globalAlpha: this.globalAlpha,
+      textAlign: this.textAlign,
     });
   }
 
@@ -96,6 +104,7 @@ export class FakeContext {
       strokeStyle: this.strokeStyle,
       lineWidth: this.lineWidth,
       globalAlpha: this.globalAlpha,
+      textAlign: this.textAlign,
     });
     this.#record('save', []);
   }
@@ -107,6 +116,7 @@ export class FakeContext {
       this.strokeStyle = state.strokeStyle;
       this.lineWidth = state.lineWidth;
       this.globalAlpha = state.globalAlpha;
+      this.textAlign = state.textAlign;
     }
     this.#record('restore', []);
   }

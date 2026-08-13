@@ -25,7 +25,7 @@ import {
 } from '../data/types.js';
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
-import { makePriceRange } from '../renderer/scale/priceScale.js';
+import { makePriceRange, type PriceRange } from '../renderer/scale/priceScale.js';
 import {
   computeLayout,
   dividerAt,
@@ -279,6 +279,24 @@ export interface Chart {
    */
   setCompare(compare: { readonly symbol: string; readonly bars: readonly Bar[] } | null): void;
   /**
+   * How the comparison is drawn: as a percent of the primary on the shared axis, or in
+   * its own prices against a second axis on the left.
+   *
+   * Percent is the default because it is what makes two instruments comparable at all —
+   * AAPL near 300 and SPY near 770 on one price axis flattens whichever has the smaller
+   * range. Own-scale exists for reading the compared instrument's actual prices.
+   */
+  setCompareScale(scale: 'percent' | 'own'): void;
+  compareScale(): 'percent' | 'own';
+  /**
+   * The domain the last frame gave the left axis, or null when there is no second scale.
+   *
+   * Reported rather than recomputed on demand: the axis is autoscaled from the aligned
+   * comparison memo, which only exists as of the frame that built it, so anything derived
+   * here after the fact would be answering about a different window than the one on screen.
+   */
+  leftPriceRange(): PriceRange | null;
+  /**
    * The pane divider within `tolerance` px of `y`, or null — for the cursor and for
    * starting a drag. Y is CSS px relative to the chart container.
    */
@@ -401,6 +419,9 @@ export function createChart(o: ChartOptions): Chart {
   let measure: { readonly from: Anchor; readonly to: Anchor } | null = null;
   let placement: Placement | null = null;
   let compare: { readonly symbol: string; readonly bars: readonly Bar[] } | null = null;
+  let compareScale: 'percent' | 'own' = 'percent';
+  /** What `leftRange` returned on the last frame; see the handle's doc comment. */
+  let lastLeftRange: PriceRange | null = null;
   /**
    * Memo for the aligned comparison.
    *
@@ -457,6 +478,9 @@ export function createChart(o: ChartOptions): Chart {
     ...LAYOUT_CHROME,
     extraPanes: paneCount(),
     ...(paneFractions === null ? {} : { paneFractions }),
+    // Reserved only when a comparison is actually being read in its own units. An axis
+    // with nothing assigned to it is dead width taken from the plot.
+    leftPriceGutterWidth: compare !== null && compareScale === 'own' ? LAYOUT_CHROME.priceGutterWidth : 0,
   });
 
   let layout: Layout = computeLayout({
@@ -607,12 +631,21 @@ export function createChart(o: ChartOptions): Chart {
     const basePrice = bars[Math.min(bars.length - 1, Math.max(0, baseIndex))].c;
     if (!(basePrice > 0)) return;
 
+    // Two ways to read the same series. On the shared axis it is projected back through
+    // the PRIMARY's scale as "the price the primary would be at, had it moved this much";
+    // on its own axis it is drawn in its own prices, which is what the left gutter labels.
+    const left = input.leftPriceScale;
+    const y =
+      left === null
+        ? (percent: number) => input.priceScale.y(asPrice(basePrice * (1 + percent / 100)))
+        : (percent: number) => left.y(asPrice(based.base * (1 + percent / 100)));
+
     drawCompareSeries(ctx, {
       percent: based.percent,
       plot: input.layout.plot,
       from: input.visible.from,
       to: input.visible.to,
-      y: (percent) => input.priceScale.y(asPrice(basePrice * (1 + percent / 100))),
+      y,
       x: (i) => overlayInput.x(i),
       x0: overlayInput.x0,
       dx: overlayInput.dx,
@@ -983,6 +1016,34 @@ export function createChart(o: ChartOptions): Chart {
     return { x: input.timeScale.x(asBarIndex(indexAtTime(times, time))), y: -1 };
   };
 
+  /**
+   * Autoscaled domain for the left axis: the compared instrument's own visible range.
+   *
+   * Computed from the aligned VALUES rather than from its raw bars, because only the
+   * aligned array knows which of its bars fall inside the primary's visible window — the
+   * two calendars do not line up, which is the whole reason alignment exists.
+   */
+  const leftRange = (input: FrameInput): PriceRange | undefined => {
+    const active = compare;
+    if (active === null || compareScale !== 'own') return undefined;
+    const cached = compareCache;
+    if (cached === null) return undefined;
+
+    let lo = Number.POSITIVE_INFINITY;
+    let hi = Number.NEGATIVE_INFINITY;
+    const values = cached.aligned.values;
+    const to = Math.min(values.length - 1, input.visible.to);
+    for (let i = Math.max(0, input.visible.from); i <= to; i++) {
+      const v = values[i];
+      if (Number.isNaN(v)) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return undefined;
+    const pad = (hi - lo) * 0.1;
+    return makePriceRange(asPrice(lo - pad), asPrice(hi + pad));
+  };
+
   const frame = (mask: DirtyMask): void => {
     const started = performance.now();
     const baseSnapshot = visibleSnapshot();
@@ -1001,19 +1062,35 @@ export function createChart(o: ChartOptions): Chart {
           `${String(revisionKey)}:${features.chartType}:${JSON.stringify(features.chartParams)}`,
         );
 
-    let input = buildFrameInput({
-      snapshot: frameSnapshot,
-      layout,
-      theme,
-      pricePrecision,
-      overlays: [],
-      pointer: framePointer(),
-      priceRange: null,
-      priceScaleInverted: priceInverted,
-      showGrid,
-      timeZone,
-      autoscaleCache,
-    });
+    /**
+     * One place that knows every field of the frame, so a rebuild cannot silently drop
+     * one. It has bitten this function before: rebuilding for a dragged price axis
+     * without re-passing the left range blanked the second axis mid-drag while the layout
+     * still held its width open.
+     */
+    const build = (priceRange: PriceRange | null, left: PriceRange | undefined): FrameInput =>
+      buildFrameInput({
+        snapshot: frameSnapshot,
+        layout,
+        theme,
+        pricePrecision,
+        overlays: [],
+        pointer: framePointer(),
+        priceRange,
+        priceScaleInverted: priceInverted,
+        showGrid,
+        timeZone,
+        autoscaleCache,
+        ...(left === undefined ? {} : { leftPriceRange: left }),
+      });
+
+    // The left domain depends on the aligned comparison, which is memoised on the frame
+    // before it — so on the first frame after a symbol or scale change there is nothing
+    // to scale from yet and the axis is simply absent for that one frame.
+    let input = build(null, undefined);
+    const left = leftRange(input);
+    lastLeftRange = left ?? null;
+    if (left !== undefined) input = build(null, left);
 
     // A dragged price axis scales the AUTOSCALED range around its own centre rather than
     // introducing a second source of truth for the range. Only rebuilt when actually
@@ -1021,19 +1098,7 @@ export function createChart(o: ChartOptions): Chart {
     if (priceZoom !== 1) {
       const centre = (input.priceScale.min + input.priceScale.max) / 2;
       const half = ((input.priceScale.max - input.priceScale.min) / 2) * priceZoom;
-      input = buildFrameInput({
-        snapshot: input.snapshot,
-        layout,
-        theme,
-        pricePrecision,
-        overlays: [],
-        pointer: framePointer(),
-        priceRange: makePriceRange(centre - half, centre + half),
-        priceScaleInverted: priceInverted,
-        showGrid,
-        timeZone,
-        autoscaleCache,
-      });
+      input = build(makePriceRange(centre - half, centre + half), left);
     }
     const derived = derivedSeries;
     // The built-in series layer draws candles from the raw bars. Any other chart type is
@@ -1342,8 +1407,19 @@ export function createChart(o: ChartOptions): Chart {
     setCompare(next) {
       compare = next;
       compareCache = null;
-      scheduler.invalidate(DirtyFlags.Overlay);
+      // All, not Overlay: an own-scale comparison changes the LAYOUT (a left gutter
+      // appears or goes), which every layer's rects depend on.
+      layout = relayout(cssSize.width, cssSize.height);
+      scheduler.invalidate(DirtyFlags.All);
     },
+    setCompareScale(next) {
+      if (next === compareScale) return;
+      compareScale = next;
+      layout = relayout(cssSize.width, cssSize.height);
+      scheduler.invalidate(DirtyFlags.All);
+    },
+    compareScale: () => compareScale,
+    leftPriceRange: () => lastLeftRange,
     compareSymbol: () => compare?.symbol ?? null,
     setPlacement(next) {
       placement = next;

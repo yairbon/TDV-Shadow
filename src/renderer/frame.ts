@@ -19,7 +19,7 @@
  */
 
 import type { BarIndex, Snapshot } from '../data/types.js';
-import { TIMEFRAME_MS } from '../data/types.js';
+import { asPrice, TIMEFRAME_MS } from '../data/types.js';
 import type { Layout } from './layout.js';
 import type { Overlay } from './layers/overlayLayer.js';
 import { overlayPriceExtent } from './layers/overlayLayer.js';
@@ -45,6 +45,14 @@ export interface FrameInput {
   readonly layout: Layout;
   readonly theme: Theme;
   readonly priceScale: PriceScale;
+  /**
+   * A second price scale for the left gutter, or null when there is only one.
+   *
+   * Exists for series whose units are not the primary's — a compared instrument read in
+   * its own prices rather than as a percent of the primary. Null and absent are the same
+   * thing here: no left axis is drawn and no space is reserved for one.
+   */
+  readonly leftPriceScale: PriceScale | null;
   readonly timeScale: TimeScale;
   readonly visible: VisibleRange;
   /** Decimal cap for price labels — the instrument's precision. */
@@ -115,6 +123,8 @@ export interface FrameInputOptions {
   readonly priceRange: PriceRange | null;
   /** §2.1 — reflects the price map so high prices sit at the bottom. */
   readonly priceScaleInverted?: boolean;
+  /** Domain for the optional left axis. Absent means no second scale. */
+  readonly leftPriceRange?: PriceRange;
   /** Defaults to true; false hides the grid rules only. */
   readonly showGrid?: boolean;
   /** IANA zone name for labels. Defaults to 'UTC'. */
@@ -159,6 +169,19 @@ export function buildFrameInput(o: FrameInputOptions): FrameInput {
     layout: o.layout,
     theme: o.theme,
     priceScale,
+    leftPriceScale:
+      o.leftPriceRange === undefined
+        ? null
+        : makePriceScale(
+            o.leftPriceRange,
+            o.layout.plot,
+            // Always linear: the left axis carries a second instrument's own prices, and
+            // inheriting the primary's log or percent mode would relabel it in units the
+            // series it describes was never expressed in.
+            'linear',
+            asPrice(1),
+            o.priceScaleInverted ?? false,
+          ),
     timeScale,
     visible,
     pricePrecision: o.pricePrecision,

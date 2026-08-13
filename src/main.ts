@@ -901,13 +901,46 @@ if (symbolSelect !== null) {
 let compareSymbol: string | null = null;
 
 function applyCompare(target: Chart): void {
+  syncCompareScaleButton();
   if (compareSymbol === null || compareSymbol === symbol) {
     target.setCompare(null);
     return;
   }
   const loadedCompare = loadSymbol(compareSymbol);
+  target.setCompareScale(compareScaleMode);
   target.setCompare({ symbol: compareSymbol, bars: loadedCompare.bars });
 }
+
+/**
+ * How the comparison is read. Per chart, like the comparison itself.
+ *
+ * Percent by default: it is what makes two instruments comparable at all. Own-scale adds
+ * a second axis on the left showing the compared instrument's actual prices.
+ */
+let compareScaleMode: 'percent' | 'own' = 'percent';
+
+const compareScaleButton = btn('#compare-scale');
+
+/**
+ * The toggle only exists while there is something to toggle.
+ *
+ * A control for a series that is not on the chart is a control that does nothing, and it
+ * was costing a permanent slot in a bar that already overflows a 1920px window — the
+ * overflow panel then hides a real control to make room for a dead one.
+ */
+function syncCompareScaleButton(): void {
+  if (compareScaleButton === null) return;
+  const active = compareSymbol !== null && compareSymbol !== symbol;
+  compareScaleButton.hidden = !active;
+  compareScaleButton.textContent = compareScaleMode === 'percent' ? '±%' : '⇤';
+  compareScaleButton.setAttribute('aria-pressed', String(compareScaleMode === 'own'));
+}
+
+compareScaleButton?.addEventListener('click', () => {
+  compareScaleMode = compareScaleMode === 'percent' ? 'own' : 'percent';
+  syncCompareScaleButton();
+  currentChart()?.setCompareScale(compareScaleMode);
+});
 
 const comparePick = sel('#compare-pick');
 if (comparePick !== null) {

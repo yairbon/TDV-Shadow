@@ -111,6 +111,31 @@ export function drawGridLayer(ctx: CanvasRenderingContext2D, f: FrameInput): voi
     }
   }
 
+  /**
+   * The left axis, when a second scale is in play.
+   *
+   * Right-aligned against the plot rather than left-aligned like the right gutter, so its
+   * numbers sit next to the data they describe instead of against the window edge. It
+   * carries its own ticks from its own scale — reusing the right axis's ticks would label
+   * one series with another's prices, which is the exact confusion a second scale exists
+   * to remove.
+   */
+  const leftGutter = f.layout.leftPriceGutter;
+  if (leftGutter !== null && f.leftPriceScale !== null) {
+    const leftTicks = priceTicks(f.leftPriceScale, theme.typography.lineHeight, f.pricePrecision);
+    ctx.textAlign = 'right';
+    const labelX = snapFill(rectRight(leftGutter)) - theme.density.labelPaddingX;
+    const half = theme.typography.lineHeight / 2;
+    for (const tick of leftTicks) {
+      if (tick.y - half < plot.top || tick.y + half > rectBottom(plot)) continue;
+      ctx.fillText(tick.price.toFixed(f.pricePrecision), labelX, snapFill(tick.y));
+    }
+    ctx.strokeStyle = theme.axisLine;
+    ctx.beginPath();
+    drawVerticalRule(ctx, rectRight(leftGutter), view.top, rectBottom(content));
+    ctx.stroke();
+  }
+
   const timeGutter = f.layout.timeGutter;
   if (timeGutter.height > 0) {
     ctx.textAlign = 'center';

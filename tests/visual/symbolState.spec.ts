@@ -415,3 +415,281 @@ test.describe('compare a second symbol', () => {
     expect(await overlayInk(page)).toBeGreaterThan(0);
   });
 });
+
+test.describe('a second price scale', () => {
+  const geometry = (page: Page): Promise<{ left: number; plotLeft: number }> =>
+    page.evaluate(() => {
+      const chart = (window as {
+        __chart?: {
+          layout: () => {
+            plot: { left: number };
+            leftPriceGutter: { width: number } | null;
+          };
+        };
+      }).__chart;
+      const l = chart?.layout();
+      return {
+        left: l?.leftPriceGutter === null || l === undefined ? 0 : l.leftPriceGutter.width,
+        plotLeft: l?.plot.left ?? -1,
+      };
+    });
+
+  /**
+   * Pixels in the left gutter that are not the background.
+   *
+   * Counting alpha does not work on the grid layer: it paints an opaque background across
+   * the whole viewport, so every pixel scores 255 and the measurement passes with the axis
+   * deleted. The background is whatever colour dominates the region, and ink is everything
+   * that differs from it.
+   */
+  const gutterInk = (page: Page): Promise<number> =>
+    page.evaluate(() => {
+      const chart = (window as {
+        __chart?: { layout: () => { leftPriceGutter: { width: number; height: number } | null } };
+      }).__chart;
+      const gutter = chart?.layout().leftPriceGutter ?? null;
+      const canvas = document.querySelector<HTMLCanvasElement>('#chart canvas[data-layer="grid"]');
+      const ctx = canvas?.getContext('2d') ?? null;
+      if (gutter === null || canvas === null || ctx === null) return -1;
+      const dpr = canvas.width / canvas.getBoundingClientRect().width;
+      const data = ctx.getImageData(
+        0,
+        0,
+        Math.round(gutter.width * dpr),
+        Math.round(gutter.height * dpr),
+      ).data;
+
+      const tally = new Map<number, number>();
+      for (let o = 0; o < data.length; o += 4) {
+        const key = (data[o] << 16) | (data[o + 1] << 8) | data[o + 2];
+        tally.set(key, (tally.get(key) ?? 0) + 1);
+      }
+      let background = 0;
+      let best = -1;
+      for (const [key, n] of tally) if (n > best) [background, best] = [key, n];
+
+      const br = (background >> 16) & 0xff;
+      const bg = (background >> 8) & 0xff;
+      const bb = background & 0xff;
+      let ink = 0;
+      for (let o = 0; o < data.length; o += 4) {
+        const distance =
+          Math.abs(data[o] - br) + Math.abs(data[o + 1] - bg) + Math.abs(data[o + 2] - bb);
+        if (distance > 40) ink++;
+      }
+      return ink;
+    });
+
+  test('offers no scale toggle until there is something to scale', async ({ page }) => {
+    // A control for a series that is not on the chart does nothing, and it was costing a
+    // permanent slot in a bar that overflows even a 1920px window — so the overflow panel
+    // hid a working control to make room for a dead one.
+    // Its own `hidden`, not `isHidden()`: at this viewport the toolbar overflows and the
+    // toggle may legitimately be parked in the (closed) overflow panel, which would make
+    // every reading come back hidden and the test pass without proving anything.
+    const suppressed = (): Promise<boolean> =>
+      page.evaluate(() => document.querySelector<HTMLElement>('#compare-scale')?.hidden ?? true);
+
+    await open(page);
+    await pick(page, 'AAPL');
+    expect(await suppressed()).toBe(true);
+
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    expect(await suppressed()).toBe(false);
+
+    await selectControl(page, '#compare-pick', '');
+    await page.waitForTimeout(600);
+    expect(await suppressed()).toBe(true);
+  });
+
+  test('no left axis exists until a comparison asks for one', async ({ page }) => {
+    await open(page);
+    await pick(page, 'AAPL');
+    expect(await geometry(page)).toMatchObject({ left: 0, plotLeft: 0 });
+
+    // A comparison in percent mode still needs no second axis — that is the point of
+    // projecting it through the primary's scale.
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(700);
+    expect((await geometry(page)).left).toBe(0);
+  });
+
+  test('switching the comparison to its own scale opens a left gutter', async ({ page }) => {
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(700);
+
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(700);
+    const after = await geometry(page);
+    expect(after.left).toBeGreaterThan(0);
+    // The plot moved right to make room rather than overlapping the axis.
+    expect(after.plotLeft).toBe(after.left);
+  });
+
+  test('the left axis is labelled in the compared instrument’s own prices', async ({ page }) => {
+    // The whole point of a second scale: labelling it with the primary's prices would be
+    // the exact confusion it exists to remove.
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(800);
+
+    // Labels are actually painted in there, not just space reserved.
+    expect(await gutterInk(page)).toBeGreaterThan(200);
+  });
+
+  test('scales the compared line to its own axis, not the primary’s domain', async ({ page }) => {
+    // SPY trades near 750 and AAPL near 250, so a left axis autoscaled from the wrong
+    // series puts the line entirely off the plot. §4's 10% padding then fixes what is left:
+    // the line fills 1/1.2 of the plot, so a missing pad (span 1.0) is caught as well as a
+    // domain taken from bars that are not on screen (span far below).
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(800);
+
+    const spanOfPlot = (): Promise<number> =>
+      page.evaluate(() => {
+        const chart = (window as { __chart?: { layout: () => { plot: { height: number } } } })
+          .__chart;
+        const plotHeight = chart?.layout().plot.height ?? 0;
+        const canvas = document.querySelector<HTMLCanvasElement>(
+          '#chart canvas[data-layer="overlay"]',
+        );
+        const ctx = canvas?.getContext('2d') ?? null;
+        if (canvas === null || ctx === null || plotHeight === 0) return -1;
+        const dpr = canvas.width / canvas.getBoundingClientRect().width;
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        let top = Number.POSITIVE_INFINITY;
+        let bottom = Number.NEGATIVE_INFINITY;
+        for (let o = 3; o < data.length; o += 4) {
+          if (data[o] <= 40) continue;
+          const y = Math.floor(o / 4 / canvas.width);
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
+        if (!Number.isFinite(top)) return 0;
+        return (bottom - top) / dpr / plotHeight;
+      });
+
+    expect(await spanOfPlot()).toBeGreaterThan(0.72);
+    expect(await spanOfPlot()).toBeLessThan(0.95);
+
+  });
+
+  test('re-autoscales the left axis to whatever window is on screen', async ({ page }) => {
+    // A domain computed from the whole history — or from bar 0 to the right edge — looks
+    // right at full zoom and stays frozen as you pan, so the compared line drifts off its
+    // own axis. The domain has to move when the window does.
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(800);
+
+    const domain = (): Promise<{ min: number; max: number } | null> =>
+      page.evaluate(() => {
+        const chart = (window as {
+          __chart?: { leftPriceRange: () => { min: number; max: number } | null };
+        }).__chart;
+        return chart?.leftPriceRange() ?? null;
+      });
+
+    const zoom = async (spacing: number, scroll: number): Promise<void> => {
+      await page.evaluate(
+        ([s, k]) => {
+          const view = (window as {
+            __chart?: {
+              view: { setBarSpacing: (s: number) => void; setScrollPosition: (k: number) => void };
+            };
+          }).__chart?.view;
+          view?.setBarSpacing(s);
+          view?.setScrollPosition(k);
+        },
+        [spacing, scroll],
+      );
+      await page.waitForTimeout(600);
+    };
+
+    // Two narrow, non-overlapping windows. They have to be late in the series: the
+    // comparison is NaN before the compared instrument's first bar, and an axis with
+    // nothing to scale is correctly absent rather than wrong.
+    await zoom(110, 99);
+    const late = await domain();
+    await zoom(110, 75);
+    const early = await domain();
+
+    expect(late).not.toBeNull();
+    expect(early).not.toBeNull();
+    if (late === null || early === null) return;
+    // Two disjoint windows of a trending series do not share a price range. A domain that
+    // always ran to the last bar would report the same top for both.
+    expect(Math.abs(late.max - early.max)).toBeGreaterThan(5);
+    // And the earlier window spans only what it shows. SPY's full demo history is ~57
+    // wide and the ten bars on screen here are ~27, so a domain that still reaches back
+    // to bar 0 cannot fit under this bound.
+    expect(early.max - early.min).toBeLessThan(35);
+  });
+
+  test('turning it back off reclaims the width', async ({ page }) => {
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(700);
+    expect((await geometry(page)).left).toBeGreaterThan(0);
+
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(700);
+    expect(await geometry(page)).toMatchObject({ left: 0, plotLeft: 0 });
+  });
+
+  test('survives a price-axis drag with the axis still drawn', async ({ page }) => {
+    // The frame is rebuilt when the price axis is dragged. A rebuild that forgets the
+    // left range leaves the layout holding 64px open for an axis nobody paints.
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(700);
+
+    const before = await gutterInk(page);
+    expect(before).toBeGreaterThan(200);
+
+    const box = await page.locator('#chart').boundingBox();
+    if (box === null) throw new Error('no chart');
+    // Drag the RIGHT price axis, which is what puts priceZoom off 1.
+    const axisX = box.x + box.width - 24;
+    await page.mouse.move(axisX, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(axisX, box.y + box.height / 2 + 90, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+
+    expect(await gutterInk(page)).toBeGreaterThan(before / 2);
+  });
+
+  test('clearing the comparison closes the left axis too', async ({ page }) => {
+    // An axis with nothing assigned to it is dead width taken from the plot.
+    await open(page);
+    await pick(page, 'AAPL');
+    await selectControl(page, '#compare-pick', 'SPY');
+    await page.waitForTimeout(600);
+    await clickControl(page, '#compare-scale');
+    await page.waitForTimeout(700);
+
+    await selectControl(page, '#compare-pick', '');
+    await page.waitForTimeout(700);
+    expect((await geometry(page)).left).toBe(0);
+  });
+});

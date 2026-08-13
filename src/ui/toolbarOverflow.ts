@@ -47,6 +47,19 @@ export function createToolbarOverflow(
 
   const inPanel = new Set<HTMLElement>();
 
+  /**
+   * Controls that appear and disappear change what fits without changing the bar's box,
+   * so the ResizeObserver never fires for them — the compare-scale toggle only exists
+   * while a comparison does. Watching `hidden` here keeps that knowledge inside this
+   * component instead of requiring every caller to remember to re-measure.
+   */
+  const contents = new MutationObserver(() => {
+    refresh();
+  });
+  const watchContents = (): void => {
+    contents.observe(bar, { attributes: true, attributeFilter: ['hidden'], subtree: true });
+  };
+
   const setOpen = (open: boolean): void => {
     panel.hidden = !open;
     button.setAttribute('aria-expanded', String(open));
@@ -61,7 +74,25 @@ export function createToolbarOverflow(
    */
   const overflowing = (): boolean => bar.scrollWidth - bar.clientWidth > 1;
 
+  /**
+   * Re-measures, with the content observer below detached for the duration.
+   *
+   * `measure` writes `hidden` on the overflow button, and a MutationObserver records an
+   * attribute write whether or not the value changed — so an observer left connected
+   * queues a record for the write, re-enters, writes again, and never settles. The first
+   * version of this hung the page. Detaching drops those records unread; a flag alone
+   * would not, because the queued records are delivered after the flag is cleared.
+   */
   const refresh = (): void => {
+    contents.disconnect();
+    try {
+      measure();
+    } finally {
+      watchContents();
+    }
+  };
+
+  const measure = (): void => {
     // Start from everything back in the bar, then evict only what is needed. Measuring
     // incrementally from the current state cannot recover once the window widens again:
     // a control parked in the panel adds nothing to `scrollWidth`, so the bar always
@@ -144,6 +175,7 @@ export function createToolbarOverflow(
     refresh,
     dispose(): void {
       observer.disconnect();
+      contents.disconnect();
       button.removeEventListener('click', onButton);
       panel.removeEventListener('click', onPanelActivate);
       panel.removeEventListener('change', onPanelActivate);
