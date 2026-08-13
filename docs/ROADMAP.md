@@ -169,7 +169,7 @@ Three more from the same pass, each of which only shows up on screen:
   ("2 drawin"), at every window narrower than about 1650px. The bar scrolls horizontally
   and the status is its last item; it is stuck to the scrollport's right edge now.
 
-## Tier 2 — in progress
+## Tier 2 ✅
 
 - **Toolbar overflow.** The bar held more than fits a 1440px window, so five controls sat
   past the right edge; reachable by scrolling, but nothing said so. Controls now move into
@@ -217,7 +217,50 @@ Three more from the same pass, each of which only shows up on screen:
   drawings, indicators, alerts, pane heights and the view — does the work, rather than a
   second restore path that would drift from the one that runs every start.
 
-Still open in Tier 2: multiple price scales (left/right assignment per series).
+- **A second price scale.** A comparison can be read on its own left-hand axis rather than
+  as a percent of the primary. Percent stays the default — it is what makes two instruments
+  comparable at all — and the axis appears only when asked for, taking its width from the
+  plot. It is always LINEAR: inheriting the primary's log or percent mode would relabel a
+  series in units it was never expressed in, which is the confusion a second scale exists
+  to remove. The toggle exists only while a comparison does.
+- **Fixed while mutation-testing it:** a dragged price axis rebuilt the frame without
+  re-passing the left range, so the axis blanked mid-drag while the layout still held its
+  width open. And the e2e ink metric counted the ALPHA channel on a layer that paints an
+  opaque background — every pixel scored, and the measurement passed with the axis deleted.
+
+## Tier 3 ✅
+
+- **Eight drawing tools.** Horizontal ray, parallel channel, price range, date range, date
+  and price range, trend angle, polyline, callout. Two things they forced: `barMs` is a
+  param rather than something geometry derives, because `buildGeometry` is handed the two
+  projectors and the plot box and nothing in there says how much TIME a bar spans; and the
+  parallel channel's copy is translated in PIXELS, since the base is already a straight
+  pixel segment between two projected anchors and a price-space offset would put the copy
+  visibly off the handle it was dragged to on a log scale.
+- **Nine indicators.** OBV, CCI, Williams %R, Donchian, Keltner, ADX, Supertrend, PSAR,
+  Ichimoku. Rolling extremes use a monotonic-deque kernel, so nothing is O(n·period) on a
+  52-bar window.
+- **A grouped tool rail.** One slot per family, showing whichever member you used last,
+  with a chevron for the rest. The flat rail listed fifteen tools against a catalogue of
+  thirty — half of what this app can draw had no way to reach it — and eight more would
+  have pushed it past the height of an 800px window, where the overflow is a scrollbar
+  nobody looks for. Flyouts are positioned in code, because the rail is a left column on
+  desktop and a bottom bar on phones and one static offset is wrong in the other.
+- **The polyline finishes early**, with Enter or a double-click. Its eight anchors are a
+  ceiling rather than a shape, so completeness is gated on `minAnchorCount`; requiring all
+  eight rendered a four-legged path as nothing.
+
+**One defect, found three times.** Three separate hand-maintained lists restated what an
+indicator's own definition already declares, and all three had gone stale:
+
+- The layout counted panes from a set of ids, so the six new pane indicators computed
+  correctly, printed their values in the legend, and were allocated no pane to draw in.
+- The MCP server restated the indicator ids, so the nine were addressable from the browser
+  and invisible over MCP.
+- `resolveToken` had two general-purpose line colours for an indicator that plots five, so
+  Ichimoku's lagging span was drawn identically to its base line.
+
+All three now derive from the registry, and a test walks it rather than naming ids.
 
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
