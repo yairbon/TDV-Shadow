@@ -60,6 +60,63 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   'short-position': define('short-position', 'Short Position', 3, { precision: 2 }),
   'text-note': define('text-note', 'Text', 1, { text: 'Note' }),
   arrow: define('arrow', 'Arrow', 2, { headLength: 12 }),
+  // One anchor, like `horizontal-line`: the direction is fixed (rightwards), so a second
+  // anchor would carry no information the first does not already have.
+  'horizontal-ray': define('horizontal-ray', 'Horizontal Ray', 1),
+  // Three: `[baseFrom, baseTo, through]`. The first two are the base trend line, the third
+  // is the point the parallel copy must pass through — the same arity as `pitchfork`.
+  'parallel-channel': define('parallel-channel', 'Parallel Channel', 3),
+  // Two corners. `precision` is the number of decimals in the price delta, matching the
+  // position tools; the percentage is always two.
+  'price-range': define('price-range', 'Price Range', 2, { precision: 2 }),
+  /*
+   * `barMs` is the timeframe's milliseconds per bar — `TIMEFRAME_MS[tf]` from
+   * `src/data/types.ts`. It has to be a param because `buildGeometry` is given only the
+   * two scales and the plot box; it can convert a bar index to an x, but nothing tells it
+   * how much TIME a bar spans. The caller that creates the drawing should pass the live
+   * timeframe (`store.add('date-range', anchors, { params: { barMs: TIMEFRAME_MS[tf] } })`).
+   * The default of 0 means "unknown", and the annotation then reports the bar count alone
+   * rather than an invented duration.
+   */
+  'date-range': define('date-range', 'Date Range', 2, { barMs: 0 }),
+  // Both measurements over one box, so it takes both tools' params.
+  'date-price-range': define('date-price-range', 'Date and Price Range', 2, {
+    precision: 2,
+    barMs: 0,
+  }),
+  // A trend line that reports the angle it subtends ON SCREEN — see the comment on its
+  // case in `geometry.ts` for why that is a pixel measurement and not a rule breach.
+  'trend-angle': define('trend-angle', 'Trend Angle', 2),
+  /*
+   * Eight, following the fixed-arity convention every multi-anchor tool here already uses
+   * (`elliott-impulse` is five, `pitchfork` three): placement ends when `anchors.length`
+   * reaches `anchorCount`, and nothing in the placement loop can finish a drawing early.
+   *
+   * The GEOMETRY is arity-agnostic — it strings a segment between each consecutive pair,
+   * however many there are — so if the rail ever grows a double-click/Escape "finish here"
+   * gesture, this number is the only thing that has to change.
+   */
+  polyline: define('polyline', 'Polyline', 8),
+  /*
+   * `[target, box]`: the first anchor is what the note points AT, the second is where the
+   * text box sits, and the leader line runs between them.
+   *
+   * The three pixel params size the box. Geometry has no font metrics — it cannot call
+   * `measureText` — so the width is `text.length * charWidth + 2 * padding`, with
+   * `charWidth` a nominal advance for the renderer's 11px UI font. Pixel constants in
+   * `params` are established here already: `arrow` carries `headLength: 12`. They are not
+   * anchors and nothing positional is stored in them; move the drawing and they are
+   * unchanged, which is exactly what makes them safe under THE ANCHOR RULE.
+   *
+   * `padding` is 6 to match the 6px the renderer already insets label text by, so the text
+   * lands inside the box rather than on its border.
+   */
+  callout: define('callout', 'Callout', 2, {
+    text: 'Note',
+    charWidth: 6,
+    padding: 6,
+    boxHeight: 22,
+  }),
 });
 
 /** Anchors required before a drawing of `kind` is complete. */

@@ -122,6 +122,76 @@ const empty = (drawing: Drawing, complete: boolean): DrawingGeometry => ({
   box: null,
 });
 
+/** Reads a numeric tool param, falling back when it is absent or holds another type. */
+function numberParam(drawing: Drawing, key: string, fallback: number): number {
+  const value = drawing.params[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** Normalised axis-aligned box through two projected points. */
+function boxThrough(a: Point, b: Point): NonNullable<DrawingGeometry['box']> {
+  return {
+    x0: Math.min(a.x, b.x),
+    y0: Math.min(a.y, b.y),
+    x1: Math.max(a.x, b.x),
+    y1: Math.max(a.y, b.y),
+  };
+}
+
+/**
+ * Half a line at the renderer's 11px annotation font: the vertical offset that stacks two
+ * rows of text around a point instead of printing them on top of each other.
+ */
+const HALF_LINE = 8;
+
+/** Centre of a box — where a measurement annotation belongs. */
+function centreOf(box: NonNullable<DrawingGeometry['box']>): Point {
+  return { x: (box.x0 + box.x1) / 2, y: (box.y0 + box.y1) / 2 };
+}
+
+/**
+ * `+20.00 (+20.00%)` — the measurement a price-range tool exists to show.
+ *
+ * PRICE space, from the anchors themselves: deriving the move from the pixel height of
+ * the box would report a different number on a log scale for the same two anchors.
+ * The percentage is relative to the FIRST anchor, the price the move started from, and is
+ * omitted entirely when that is zero rather than reported as `Infinity` or as a bare 0.
+ */
+function priceMoveLabel(from: number, to: number, precision: number): string {
+  const delta = to - from;
+  const signed = `${delta > 0 ? '+' : ''}${delta.toFixed(precision)}`;
+  if (from === 0) return signed;
+  const percent = (delta / from) * 100;
+  return `${signed} (${percent > 0 ? '+' : ''}${percent.toFixed(2)}%)`;
+}
+
+/** `2d 3h 15m` — coarse units first, minutes always shown when nothing else is. */
+function durationLabel(ms: number): string {
+  const totalMinutes = Math.round(ms / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${String(days)}d`);
+  if (hours > 0) parts.push(`${String(hours)}h`);
+  if (minutes > 0 || parts.length === 0) parts.push(`${String(minutes)}m`);
+  return parts.join(' ');
+}
+
+/**
+ * `15 bars, 15m` — the measurement a date-range tool exists to show.
+ *
+ * BAR space, from the anchors: the count is `|Δ barIndex|`, so it is unaffected by pan,
+ * zoom or bar spacing, and elapsed time is that count times the timeframe's bar duration.
+ * `barMs === 0` means the caller did not say what a bar is worth, and the duration is then
+ * omitted rather than guessed (see `date-range` in `tools.ts`).
+ */
+function barSpanLabel(fromBar: number, toBar: number, barMs: number): string {
+  const bars = Math.round(Math.abs(toBar - fromBar));
+  const counted = `${String(bars)} ${bars === 1 ? 'bar' : 'bars'}`;
+  return barMs > 0 ? `${counted}, ${durationLabel(bars * barMs)}` : counted;
+}
+
 /** Formats a fib ratio for its label: 0.618 -> "0.618", 1 -> "1". */
 function ratioLabel(ratio: number): string {
   return Number.isInteger(ratio) ? String(ratio) : ratio.toFixed(3).replace(/0+$/, '');
@@ -179,6 +249,28 @@ export function buildGeometry(
             y: p0.y,
             label: drawing.anchors[0].price.toFixed(2),
             x: plot.left,
+          },
+        ],
+        points,
+        labels: [],
+        box: null,
+      };
+
+    case 'horizontal-ray':
+      return {
+        ...base,
+        // Rightwards only, from the anchor — not `extendToEdge`, which would need a second
+        // point to take a direction from and would happily run left for a leftward one.
+        segments: [{ from: p0, to: { x: right, y: p0.y } }],
+        // The run starts at the ANCHOR, not at the plot's left edge. Unlike
+        // `horizontal-line`, this level occupies only the plot to the right of its anchor,
+        // and its label belongs at the start of its own run (see `Level.x`).
+        levels: [
+          {
+            price: drawing.anchors[0].price,
+            y: p0.y,
+            label: drawing.anchors[0].price.toFixed(2),
+            x: p0.x,
           },
         ],
         points,
@@ -282,6 +374,145 @@ export function buildGeometry(
           { from: p0, to: extendToEdge(p0, mid, plot) },
           parallel(p1),
           parallel(p2),
+        ],
+        levels: [],
+        points,
+        labels: [],
+        box: null,
+      };
+    }
+
+    /*
+     * The three measurement boxes. Same box, same anchors, different readout — one case
+     * rather than three near-identical copies, leaving only "which rows of text" per kind.
+     *
+     * The annotations sit at the centre of the box: the measurement IS the output. The
+     * renderer starts label text slightly right of `x`, which is as close to centred as
+     * geometry can get — it has no font metrics.
+     */
+    case 'price-range':
+    case 'date-range':
+    case 'date-price-range': {
+      const box = boxThrough(p0, p1);
+      const centre = centreOf(box);
+      const priceRow = (y: number): Point & { readonly text: string } => ({
+        x: centre.x,
+        y,
+        text: priceMoveLabel(
+          drawing.anchors[0].price,
+          drawing.anchors[1].price,
+          numberParam(drawing, 'precision', 2),
+        ),
+      });
+      const spanRow = (y: number): Point & { readonly text: string } => ({
+        x: centre.x,
+        y,
+        text: barSpanLabel(
+          drawing.anchors[0].barIndex,
+          drawing.anchors[1].barIndex,
+          numberParam(drawing, 'barMs', 0),
+        ),
+      });
+      const labels =
+        drawing.kind === 'price-range'
+          ? [priceRow(centre.y)]
+          : drawing.kind === 'date-range'
+            ? [spanRow(centre.y)]
+            : // Stacked half a line apart, or the combined tool's two rows overprint.
+              [priceRow(centre.y - HALF_LINE), spanRow(centre.y + HALF_LINE)];
+      return { ...base, segments: [], levels: [], points, labels, box };
+    }
+
+    case 'callout': {
+      const text = String(drawing.params['text'] ?? '');
+      const height = numberParam(drawing, 'boxHeight', 22);
+      const padding = numberParam(drawing, 'padding', 6);
+      // No font metrics here (see `callout` in tools.ts): a nominal advance width per
+      // character, which the renderer's 11px UI font stays under for ordinary text.
+      const width = text.length * numberParam(drawing, 'charWidth', 6) + padding * 2;
+      // The second anchor is the box's left edge, vertically centred on it — so the anchor
+      // handle the user drags is ON the box, not floating at one of its corners.
+      const box = {
+        x0: p1.x,
+        y0: p1.y - height / 2,
+        x1: p1.x + width,
+        y1: p1.y + height / 2,
+      };
+      return {
+        ...base,
+        // The leader stops at whichever vertical edge FACES the target. Always ending it at
+        // the left edge would drag the line straight across the text whenever the note was
+        // placed to the left of what it annotates.
+        segments: [{ from: p0, to: { x: p0.x > box.x1 ? box.x1 : box.x0, y: p1.y } }],
+        levels: [],
+        points,
+        // The renderer insets label text by 6px, which is `padding` — so the text lands
+        // inside the box rather than on its border.
+        labels: [{ x: box.x0, y: p1.y, text }],
+        box,
+      };
+    }
+
+    case 'polyline': {
+      // OPEN: one segment per consecutive pair and nothing joining the last anchor back to
+      // the first. Closing it would turn a path into a polygon and hand the hit tester a
+      // chord across empty chart the user never drew.
+      const segments: Segment[] = [];
+      for (let i = 1; i < points.length; i++) segments.push({ from: points[i - 1], to: points[i] });
+      return { ...base, segments, levels: [], points, labels: [], box: null };
+    }
+
+    case 'trend-angle': {
+      /*
+       * PIXEL space, and here that is the definition rather than an exception grudgingly
+       * taken: an angle is a property of the picture. The same two anchors subtend a
+       * different angle at every zoom, every bar spacing and every price range — which is
+       * precisely the number this tool exists to report, and why it is worth showing at
+       * all. Computing `atan2(Δprice, Δbar)` instead would produce a figure in price-units
+       * per bar wearing a degree sign, constant while the chart it describes changed shape.
+       *
+       * `p0.y - p1.y` and not the other way round: screen y grows downwards, so this makes
+       * a rising line read as a positive angle, the way a person would say it.
+       */
+      const degrees = (Math.atan2(p0.y - p1.y, p1.x - p0.x) * 180) / Math.PI;
+      return {
+        ...base,
+        segments: [{ from: p0, to: p1 }],
+        levels: [],
+        points,
+        // At the far end, where the eye ends up after following the line.
+        labels: [{ ...p1, text: `${degrees.toFixed(1)}°` }],
+        box: null,
+      };
+    }
+
+    case 'parallel-channel': {
+      const p2 = points[2];
+      /*
+       * The copy is translated in PIXELS, and that is deliberate — the one place in this
+       * tool where the price-space rule does not apply, for the same reason as
+       * `constrainToAngle`.
+       *
+       * The base line is already a straight pixel segment between two projected anchors
+       * (see `trendline`), so "parallel to it" is only defined in pixel space. Offsetting
+       * by a constant PRICE instead would, on a log scale, produce a line that does not
+       * pass through the anchor the user dragged it to — the handle would sit visibly off
+       * its own line. Everything that is stored is still an anchor in data space; only the
+       * relation between the two lines is pixel-derived, and it is recomputed every frame.
+       */
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      const p3 = { x: p2.x + dx, y: p2.y + dy };
+      return {
+        ...base,
+        // The last two segments close the band into a parallelogram. They stand in for the
+        // translucent fill TradingView paints there: `DrawingGeometry.box` is axis-aligned,
+        // so it cannot describe a sloped band, and the renderer has no polygon primitive.
+        segments: [
+          { from: p0, to: p1 },
+          { from: p2, to: p3 },
+          { from: p0, to: p2 },
+          { from: p1, to: p3 },
         ],
         levels: [],
         points,
