@@ -178,6 +178,101 @@ export function stdDevInto(
   }
 }
 
+/**
+ * Rolling window extreme (max or min) in ONE pass, via a monotonic deque of indices.
+ *
+ * The obvious nested loop is O(n·period), which at 100k bars and Ichimoku's 52-bar Senkou
+ * span is five million comparisons for a single plot and shows up in the frame budget.
+ * The deque holds candidate indices in decreasing (max) or increasing (min) order of
+ * value, so the window's extreme is always at its head: amortised O(1) per bar, one
+ * allocation for the whole pass.
+ *
+ * First value lands at `offset + period - 1`; everything before it is left as the
+ * caller's NaN.
+ */
+function rollingExtremeInto(
+  src: Float64Array,
+  period: number,
+  out: Float64Array,
+  offset: number,
+  wantMax: boolean,
+): void {
+  const n = src.length;
+  if (period < 1 || offset < 0 || n - offset < period) return;
+
+  const deque = new Int32Array(n - offset);
+  let head = 0;
+  let tail = 0; // deque occupies [head, tail)
+
+  for (let i = offset; i < n; i += 1) {
+    const value = src[i];
+    while (tail > head && (wantMax ? src[deque[tail - 1]] <= value : src[deque[tail - 1]] >= value)) {
+      tail -= 1;
+    }
+    deque[tail] = i;
+    tail += 1;
+    if (deque[head] <= i - period) head += 1;
+    if (i >= offset + period - 1) out[i] = src[deque[head]];
+  }
+}
+
+/** Highest value of the trailing `period` window, one pass. */
+export function rollingMaxInto(
+  src: Float64Array,
+  period: number,
+  out: Float64Array,
+  offset = 0,
+): void {
+  rollingExtremeInto(src, period, out, offset, true);
+}
+
+/** Lowest value of the trailing `period` window, one pass. */
+export function rollingMinInto(
+  src: Float64Array,
+  period: number,
+  out: Float64Array,
+  offset = 0,
+): void {
+  rollingExtremeInto(src, period, out, offset, false);
+}
+
+/** Projects bars onto a single OHLC field, one allocation. */
+export function extractField(bars: readonly Bar[], field: 'o' | 'h' | 'l' | 'c'): Float64Array {
+  const out = new Float64Array(bars.length);
+  for (let i = 0; i < bars.length; i += 1) out[i] = bars[i][field];
+  return out;
+}
+
+/**
+ * True range per bar: `max(h − l, |h − prevClose|, |l − prevClose|)`.
+ *
+ * Index 0 has no previous close and is left at 0 — it is never read, because every
+ * consumer smooths from `offset = 1`. Returning 0 rather than NaN keeps the buffer usable
+ * as a plain numeric source for the Wilder kernels.
+ */
+export function trueRange(bars: readonly Bar[]): Float64Array {
+  const out = new Float64Array(bars.length);
+  for (let i = 1; i < bars.length; i += 1) {
+    const previousClose = bars[i - 1].c;
+    out[i] = Math.max(
+      bars[i].h - bars[i].l,
+      Math.abs(bars[i].h - previousClose),
+      Math.abs(bars[i].l - previousClose),
+    );
+  }
+  return out;
+}
+
+/**
+ * Average True Range, Wilder-smoothed from the first real true range (index 1), so the
+ * first value lands at index `period`. Shared by Keltner, Supertrend and ADX so all three
+ * agree with the standalone ATR indicator to the last decimal.
+ */
+export function atrInto(bars: readonly Bar[], period: number, out: Float64Array): void {
+  if (bars.length < 2) return;
+  wilderInto(trueRange(bars), period, out, 1);
+}
+
 /** Number of leading NaNs — the formed-from index of a plot. */
 export function leadingNaNCount(values: Float64Array): number {
   let count = 0;
