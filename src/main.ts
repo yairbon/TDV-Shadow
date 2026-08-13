@@ -28,6 +28,7 @@ import { createIndicatorDialog } from './ui/indicatorDialog.js';
 import { createDrawingDialog } from './ui/drawingDialog.js';
 import { createToolbarOverflow } from './ui/toolbarOverflow.js';
 import { createObjectTree, type ObjectRow } from './ui/objectTree.js';
+import { createToolRail, type ToolGroup } from './ui/toolRail.js';
 import { deleteLayout, listLayouts, loadLayout, saveLayout } from './app/workspace.js';
 import { createTextPrompt } from './ui/prompt.js';
 import { searchSymbols, type MatchRange } from './app/symbolSearch.js';
@@ -35,12 +36,12 @@ import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import { MIN_BAR_SPACING } from './renderer/scale/timeScale.js';
-import type { Bar, PriceScaleMode, Timeframe } from './data/types.js';
+import { TIMEFRAME_MS, type Bar, type PriceScaleMode, type Timeframe } from './data/types.js';
 import type { ChartType } from './charts/types.js';
 import { computeIndicator, INDICATOR_IDS } from './indicators/registry.js';
 import type { IndicatorId, IndicatorParams } from './indicators/types.js';
 import type { PlotStyles } from './renderer/layers/annotationsLayer.js';
-import { TOOL_DEFINITIONS } from './drawings/tools.js';
+import { minimumAnchors, TOOL_DEFINITIONS } from './drawings/tools.js';
 import type { DrawingKind, MagnetMode } from './drawings/types.js';
 
 declare global {
@@ -411,6 +412,10 @@ function installControl(): void {
       switchSymbol(next);
     },
     available: SYMBOLS.map((s) => s.symbol),
+    // A getter, not a snapshot: `installControl` runs once per chart build and the armed
+    // tool changes constantly after it.
+    activeTool: () => activeTool,
+    toolKinds: Object.keys(TOOL_DEFINITIONS),
   });
 }
 
@@ -1241,28 +1246,59 @@ const ICONS: Readonly<Record<string, string>> = {
   'elliott-impulse': '<path d="M3 19l4-6 3 4 4-9 4 6 3-2"/>',
   'long-position': '<rect x="4" y="5" width="16" height="6"/><rect x="4" y="13" width="16" height="6"/>',
   'text-note': '<path d="M6 6h12M12 6v12"/>',
+  'extended-line': '<path d="M2 20L22 4"/><circle cx="8" cy="15.6" r="2"/><circle cx="16" cy="9.6" r="2"/>',
+  'horizontal-ray': '<path d="M4 12h17"/><circle cx="4" cy="12" r="2"/>',
+  'parallel-channel': '<path d="M3 17L15 5"/><path d="M9 21L21 9"/><circle cx="3" cy="17" r="1.6"/><circle cx="15" cy="5" r="1.6"/>',
+  'price-range': '<path d="M12 4v16"/><path d="M8 7l4-3 4 3"/><path d="M8 17l4 3 4-3"/>',
+  'date-range': '<path d="M4 12h16"/><path d="M7 8l-3 4 3 4"/><path d="M17 8l3 4-3 4"/>',
+  'date-price-range': '<rect x="4" y="6" width="16" height="12" rx="1"/><path d="M4 12h16M12 6v12"/>',
+  'trend-angle': '<path d="M4 20h14"/><path d="M4 20L18 8"/><path d="M10 20a6 6 0 00.9-3.2"/>',
+  polyline: '<path d="M3 17l5-6 4 4 4-8 5 5"/><circle cx="3" cy="17" r="1.6"/><circle cx="21" cy="12" r="1.6"/>',
+  callout: '<path d="M4 5h16v10H11l-4 4v-4H4z"/>',
+  'fib-fan': '<path d="M4 20L20 4M4 20L20 11M4 20L20 17"/><path d="M4 20h16"/>',
+  'fib-time-zones': '<path d="M5 4v16M8 4v16M13 4v16M20 4v16"/>',
+  'gann-box': '<rect x="4" y="4" width="16" height="16"/><path d="M4 20L20 4M4 4l16 16"/>',
+  'elliott-correction': '<path d="M4 17l5-8 5 6 6-9"/>',
+  'short-position':
+    '<rect x="4" y="5" width="16" height="6"/><rect x="4" y="13" width="16" height="6"/><path d="M9 8h6"/>',
+  arrow: '<path d="M4 18L19 6"/><path d="M13 5h6v6"/>',
   magnet: '<path d="M7 4v8a5 5 0 0010 0V4"/><path d="M7 8h4M13 8h4"/>',
   measure:
     '<rect x="3" y="8" width="18" height="8" rx="1"/><path d="M7 8v3M11 8v4M15 8v3M19 8v4"/>',
   erase: '<path d="M6 6l12 12M18 6L6 18"/>',
 };
 
-const RAIL_TOOLS: readonly string[] = [
-  'cursor',
-  'trendline',
-  'ray',
-  'horizontal-line',
-  'vertical-line',
-  'rectangle',
-  'ellipse',
-  'fib-retracement',
-  'fib-extension',
-  'gann-fan',
-  'pitchfork',
-  'elliott-impulse',
-  'long-position',
-  'text-note',
-  'measure',
+/**
+ * The rail, as families rather than a flat list.
+ *
+ * Every kind in `TOOL_DEFINITIONS` appears in exactly one group, so nothing this app can
+ * draw is unreachable — fifteen of thirty kinds had no rail entry before. Within a group
+ * the first entry is what the slot shows until the user picks another, so the ordering is
+ * "most reached for first", not alphabetical.
+ */
+const RAIL_GROUPS: readonly ToolGroup[] = [
+  { id: 'cursor', label: 'Cursor', tools: ['cursor'] },
+  {
+    id: 'lines',
+    label: 'Lines',
+    tools: ['trendline', 'ray', 'extended-line', 'horizontal-line', 'horizontal-ray',
+      'vertical-line', 'trend-angle', 'parallel-channel', 'polyline'],
+  },
+  { id: 'shapes', label: 'Shapes', tools: ['rectangle', 'ellipse', 'arrow'] },
+  {
+    id: 'fib',
+    label: 'Fibonacci',
+    tools: ['fib-retracement', 'fib-extension', 'fib-fan', 'fib-time-zones'],
+  },
+  { id: 'gann', label: 'Gann', tools: ['gann-fan', 'gann-box'] },
+  { id: 'patterns', label: 'Patterns', tools: ['elliott-impulse', 'elliott-correction', 'pitchfork'] },
+  {
+    id: 'measure',
+    label: 'Measure',
+    tools: ['measure', 'price-range', 'date-range', 'date-price-range'],
+  },
+  { id: 'positions', label: 'Positions', tools: ['long-position', 'short-position'] },
+  { id: 'notes', label: 'Annotations', tools: ['text-note', 'callout'] },
 ];
 
 /**
@@ -1288,30 +1324,31 @@ function icon(name: string): string {
 }
 
 const rail = el('#tool-rail');
-if (rail !== null) {
-  for (const name of RAIL_TOOLS) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.dataset['tool'] = name === 'cursor' ? '' : name;
-    button.title = TOOL_LABELS[name] ?? TOOL_DEFINITIONS[name as DrawingKind].label;
-    button.setAttribute('aria-label', button.title);
-    button.setAttribute('aria-pressed', String(name === 'cursor'));
-    button.innerHTML = icon(name);
-    button.addEventListener('click', () => {
-      activeTool = button.dataset['tool'] ?? '';
-      pending = [];
-      clearPlacement();
-      for (const other of rail.querySelectorAll('button[data-tool]')) {
-        other.setAttribute('aria-pressed', String(other === button));
-      }
-      status();
-    });
-    rail.append(button);
-  }
 
-  const separator = document.createElement('div');
-  separator.className = 'sep';
-  rail.append(separator);
+/** The rail component, or null when the host element is missing (tests render fragments). */
+const toolRail =
+  rail === null
+    ? null
+    : createToolRail(rail, {
+        groups: RAIL_GROUPS,
+        icon,
+        label: (tool) => {
+          const named = TOOL_LABELS[tool];
+          if (named !== undefined) return named;
+          return isDrawingTool(tool) ? TOOL_DEFINITIONS[tool].label : tool;
+        },
+        onSelect: (tool) => {
+          // 'cursor' is the rail's name for "nothing armed"; the rest of main.ts spells
+          // that as the empty string, and has since before the rail was grouped.
+          activeTool = tool === 'cursor' ? '' : tool;
+          pending = [];
+          clearPlacement();
+          status();
+        },
+      });
+
+if (rail !== null && toolRail !== null) {
+  toolRail.addSeparator();
 
   const magnetButton = document.createElement('button');
   magnetButton.type = 'button';
@@ -1324,7 +1361,7 @@ if (rail !== null) {
     magnetButton.setAttribute('aria-pressed', String(magnet !== 'off'));
     status();
   });
-  rail.append(magnetButton);
+  toolRail.addExtra(magnetButton);
 
   const eraseButton = document.createElement('button');
   eraseButton.type = 'button';
@@ -1338,7 +1375,7 @@ if (rail !== null) {
     clearPlacement();
     status();
   });
-  rail.append(eraseButton);
+  toolRail.addExtra(eraseButton);
 
   const objectsButton = document.createElement('button');
   objectsButton.type = 'button';
@@ -1351,7 +1388,7 @@ if (rail !== null) {
     if (objectTree.isOpen()) objectTree.close();
     else objectTree.open(objectRows());
   });
-  rail.append(objectsButton);
+  toolRail.addExtra(objectsButton);
 }
 
 /**
@@ -1483,9 +1520,49 @@ function status(): void {
   );
 }
 
+/**
+ * Commits the anchors placed so far as a drawing.
+ *
+ * `barMs` rides along for the tools that report elapsed time. Geometry is handed the two
+ * projectors and the plot box and nothing else — a bar index becomes an x, but nothing in
+ * there says how much TIME a bar spans, so the timeframe has to come from here. Passing 0
+ * (the default) makes those tools report the bar count alone rather than invent a
+ * duration, which is why this is not merely cosmetic.
+ */
+function commitPending(kind: DrawingKind): void {
+  const target = chart;
+  if (target === null || pending.length < minimumAnchors(kind)) return;
+  capture();
+  target.drawings.add(kind, pending, { params: { barMs: TIMEFRAME_MS[tf] } });
+  pending = [];
+  clearPlacement();
+  status();
+}
+
+/**
+ * Finishes a variable-length placement early — Enter, or a double-click on the chart.
+ *
+ * Only the polyline has anything to finish early today; for every other tool the minimum
+ * and the full arity are the same number and this is a no-op, which is what keeps the
+ * gesture from surprising anyone using a two-anchor tool.
+ */
+function finishPending(): boolean {
+  if (!isDrawingTool(activeTool)) return false;
+  const definition = TOOL_DEFINITIONS[activeTool];
+  const minimum = minimumAnchors(activeTool);
+  if (minimum >= definition.anchorCount) return false;
+  if (pending.length < minimum) return false;
+  commitPending(activeTool);
+  return true;
+}
+
 let downAt: { x: number; y: number } | null = null;
 panesHost.addEventListener('pointerdown', (event) => {
   downAt = { x: event.clientX, y: event.clientY };
+});
+
+panesHost.addEventListener('dblclick', () => {
+  finishPending();
 });
 
 panesHost.addEventListener('click', (event) => {
@@ -1505,10 +1582,7 @@ panesHost.addEventListener('click', (event) => {
   pending = [...pending, placedAnchor];
 
   if (pending.length >= TOOL_DEFINITIONS[activeTool].anchorCount) {
-    capture();
-    chart.drawings.add(activeTool, pending);
-    pending = [];
-    clearPlacement();
+    commitPending(activeTool);
   } else {
     // Repin immediately rather than waiting for the next pointer move, so the anchor
     // shows up under the cursor the instant it is clicked.
@@ -2718,16 +2792,23 @@ const TOOL_KEYS: Readonly<Record<string, DrawingKind>> = {
   v: 'vertical-line',
   r: 'rectangle',
   f: 'fib-retracement',
+  // Tier 3 tools. Letters picked to be mnemonic and unused: `a` for angle, `c` for
+  // channel, `p` for polyline, `n` for the callout note, `d` for the date range.
+  a: 'trend-angle',
+  c: 'parallel-channel',
+  p: 'polyline',
+  n: 'callout',
+  d: 'date-range',
 };
 
 function selectTool(kind: string): void {
   activeTool = kind;
   pending = [];
   clearPlacement();
-  const rail = el('#tool-rail');
-  for (const button of rail?.querySelectorAll('button[data-tool]') ?? []) {
-    button.setAttribute('aria-pressed', String((button as HTMLElement).dataset['tool'] === kind));
-  }
+  // The rail reflects what is armed; it does not decide it. A keyboard shortcut for a
+  // tool tucked inside a flyout also makes it that group's shown member, so the next
+  // click on the slot repeats it.
+  toolRail?.select(kind === '' ? 'cursor' : kind);
   status();
 }
 
@@ -2748,6 +2829,12 @@ document.addEventListener('keydown', (event) => {
   if (meta && event.key.toLowerCase() === 'y') {
     event.preventDefault();
     redo();
+    return;
+  }
+  // Enter finishes a variable-length placement. Checked before Escape's cancel so the two
+  // gestures stay distinct: Enter keeps what you drew, Escape throws it away.
+  if (event.key === 'Enter' && finishPending()) {
+    event.preventDefault();
     return;
   }
   if (event.key === 'Escape') {

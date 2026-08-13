@@ -69,6 +69,17 @@ const FIELDS: Readonly<Record<string, FieldSpec | undefined>> = {
   stdDev: { kind: 'number', label: 'Std deviations', min: 0.1, max: 10, step: 0.1 },
   buckets: { kind: 'number', label: 'Rows', min: 4, max: 400, step: 1 },
   valueAreaPercent: { kind: 'number', label: 'Value area %', min: 1, max: 100, step: 1 },
+  // Tier 3 indicators. A parameter with no row here is silently skipped, so the
+  // indicator computes with it but nobody can change it — which is what these six fix.
+  atrPeriod: { kind: 'number', label: 'ATR length', min: 1, max: 5000, step: 1 },
+  multiplier: { kind: 'number', label: 'Multiplier', min: 0.1, max: 20, step: 0.1 },
+  // PSAR's acceleration factor: it starts at `step` and adds `step` on each new extreme
+  // up to `maxStep`, so a step above the cap would flip the parabola on its first bar.
+  step: { kind: 'number', label: 'Acceleration step', min: 0.001, max: 1, step: 0.001 },
+  maxStep: { kind: 'number', label: 'Max acceleration', min: 0.001, max: 1, step: 0.001 },
+  tenkanPeriod: { kind: 'number', label: 'Conversion line', min: 1, max: 5000, step: 1 },
+  kijunPeriod: { kind: 'number', label: 'Base line', min: 1, max: 5000, step: 1 },
+  senkouBPeriod: { kind: 'number', label: 'Leading span B', min: 1, max: 5000, step: 1 },
   source: { kind: 'source', label: 'Source' },
 };
 

@@ -497,6 +497,72 @@
         background: var(--border);
         margin: 4px 8px;
       }
+      /* A slot is one family: the button that arms it, the chevron, and the flyout. */
+      .rail-slot {
+        position: relative;
+        width: 32px;
+        margin: 0 auto;
+      }
+      /* The chevron overlays the button's bottom-right corner. `pointer-events: auto`
+         against the button below it is what lets the two targets differ. */
+      .rail-more {
+        position: absolute;
+        right: 2px;
+        bottom: 2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        cursor: pointer;
+      }
+      .rail-more::after {
+        content: '';
+        position: absolute;
+        right: 1px;
+        bottom: 1px;
+        border-left: 4px solid transparent;
+        border-bottom: 4px solid var(--text-dim);
+      }
+      .rail-slot:hover .rail-more::after,
+      .rail-slot button[aria-pressed='true'] + .rail-more::after {
+        border-bottom-color: var(--text);
+      }
+      .rail-slot button[aria-pressed='true'] + .rail-more::after {
+        border-bottom-color: #fff;
+      }
+      /* Fixed, and positioned by src/ui/toolRail.ts — the rail is a left column at
+         desktop widths and a bottom bar on phones, and one static offset cannot keep the
+         menu on screen in both. */
+      .rail-menu {
+        position: fixed;
+        z-index: 40;
+        min-width: 190px;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--panel);
+        box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+      }
+      .rail-menu[hidden] {
+        display: none;
+      }
+      .rail-menu button {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 8px;
+        width: 100%;
+        height: 28px;
+        padding: 0 8px;
+        margin: 0;
+        font-size: 12px;
+        text-align: left;
+        white-space: nowrap;
+      }
+      .rail-menu svg {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+      }
 
       #chart-wrap {
         position: relative;
@@ -988,6 +1054,22 @@
           height: 38px;
           margin: 0;
           flex: 0 0 38px;
+        }
+        .rail-slot {
+          width: 38px;
+          margin: 0;
+          flex: 0 0 38px;
+        }
+        /* The rail is a bottom bar here, so a flyout opening to the RIGHT runs off the
+           screen for every slot past the first few. It opens upward instead, and is
+           right-aligned near the end of the row so the last slot's menu stays on screen. */
+        .rail-menu {
+          max-height: 60vh;
+          overflow-y: auto;
+        }
+        .rail-menu button {
+          height: 34px;
+          flex: 0 0 34px;
         }
         .rail .sep {
           width: 1px;

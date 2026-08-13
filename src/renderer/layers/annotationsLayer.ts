@@ -20,6 +20,9 @@ export function resolveToken(theme: Theme, token: string): string {
   const table: Record<string, string> = {
     overlayLine: theme.overlayLine,
     indicatorLineAlt: theme.downBody,
+    // A third line colour, for indicators that plot more than two at once. Ichimoku is
+    // five lines; with only two tokens two of them came out identical.
+    indicatorLineThird: theme.axisTextStrong,
     indicatorBand: theme.gridLine,
     indicatorHistogram: theme.upVolume,
     indicatorProfile: theme.upVolume,
@@ -163,6 +166,40 @@ function strokePlot(
   ctx.setLineDash([]);
 }
 
+/**
+ * One dot per bar, for a plot that is a series of levels rather than a path.
+ *
+ * The parabolic SAR is why this exists: its value jumps from above price to below it on
+ * every reversal, and a stroked path draws that jump as a near-vertical line across the
+ * candles — a line the indicator does not have. Dots also say what SAR means, which is a
+ * stop level for each bar and not a trend of its own.
+ *
+ * Sub-pixel bar spacing collapses the dots onto shared columns; at that density they are
+ * a band rather than a sequence, which is the honest reading of a hundred stops inside
+ * one pixel, so no aggregation is attempted beyond letting them overlap.
+ */
+function drawDots(
+  ctx: CanvasRenderingContext2D,
+  values: Float64Array,
+  input: OverlayInput,
+  scale: PlotScale,
+  color: string,
+  override: PlotStyleOverride = {},
+): void {
+  ctx.fillStyle = override.color ?? color;
+  const radius = Math.max(1, (override.lineWidth ?? 1.5) * 0.9);
+  for (let i = input.from; i <= input.to; i++) {
+    const value = values[i];
+    if (Number.isNaN(value)) continue;
+    ctx.beginPath();
+    // snapFill, not snapLine: §7's half-pixel offset is for 1px STROKES, where it puts the
+    // line on a pixel rather than straddling two. A filled disc centred on a half pixel is
+    // the blurred case, not the crisp one.
+    ctx.arc(snapFill(input.x(i)), snapFill(scale.y(value)), radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function fillHistogram(
   ctx: CanvasRenderingContext2D,
   values: Float64Array,
@@ -225,7 +262,9 @@ export function drawIndicatorOverlay(
   for (const plot of result.plots) {
     const values = result.values[plot.key];
     if (plot.style === 'histogram') continue;
-    strokePlot(ctx, values, input, scale, resolveToken(input.theme, plot.colorToken), styles[plot.key]);
+    const color = resolveToken(input.theme, plot.colorToken);
+    if (plot.style === 'dots') drawDots(ctx, values, input, scale, color, styles[plot.key]);
+    else strokePlot(ctx, values, input, scale, color, styles[plot.key]);
   }
   ctx.restore();
 }
@@ -330,7 +369,9 @@ export function drawIndicatorPane(
       fillHistogram(ctx, values, input, scale, input.theme, barWidth);
       continue;
     }
-    strokePlot(ctx, values, input, scale, resolveToken(input.theme, plot.colorToken), styles[plot.key]);
+    const color = resolveToken(input.theme, plot.colorToken);
+    if (plot.style === 'dots') drawDots(ctx, values, input, scale, color, styles[plot.key]);
+    else strokePlot(ctx, values, input, scale, color, styles[plot.key]);
   }
 
   ctx.restore();

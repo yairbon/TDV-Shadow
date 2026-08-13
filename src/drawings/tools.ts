@@ -25,8 +25,19 @@ const define = (
   label: string,
   anchorCount: number,
   defaults: ToolDefinition['defaults'] = {},
+  minAnchorCount: number = anchorCount,
 ): ToolDefinition =>
-  Object.freeze<ToolDefinition>({ kind, label, anchorCount, defaults: Object.freeze(defaults) });
+  Object.freeze<ToolDefinition>({
+    kind,
+    label,
+    anchorCount,
+    minAnchorCount,
+    defaults: Object.freeze(defaults),
+  });
+
+/** Anchors a kind needs to be drawable at all — `minAnchorCount`, or its full arity. */
+export const minimumAnchors = (kind: DrawingKind): number =>
+  TOOL_DEFINITIONS[kind].minAnchorCount ?? TOOL_DEFINITIONS[kind].anchorCount;
 
 /**
  * Anchor arities. `fib-extension` takes two anchors, not three: every level is
@@ -88,15 +99,14 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   // case in `geometry.ts` for why that is a pixel measurement and not a rule breach.
   'trend-angle': define('trend-angle', 'Trend Angle', 2),
   /*
-   * Eight, following the fixed-arity convention every multi-anchor tool here already uses
-   * (`elliott-impulse` is five, `pitchfork` three): placement ends when `anchors.length`
-   * reaches `anchorCount`, and nothing in the placement loop can finish a drawing early.
+   * Up to eight anchors, finished early with Enter or a double-click once two are down —
+   * `minAnchorCount` is what `buildGeometry` gates completeness on, `anchorCount` is only
+   * where placement stops on its own. Escape still cancels, as it does everywhere else.
    *
-   * The GEOMETRY is arity-agnostic — it strings a segment between each consecutive pair,
-   * however many there are — so if the rail ever grows a double-click/Escape "finish here"
-   * gesture, this number is the only thing that has to change.
+   * The GEOMETRY is arity-agnostic: it strings a segment between each consecutive pair,
+   * however many there are. Eight is therefore a ceiling rather than a shape.
    */
-  polyline: define('polyline', 'Polyline', 8),
+  polyline: define('polyline', 'Polyline', 8, {}, 2),
   /*
    * `[target, box]`: the first anchor is what the note points AT, the second is where the
    * text box sits, and the leader line runs between them.

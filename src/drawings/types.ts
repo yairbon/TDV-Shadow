@@ -101,8 +101,15 @@ export const ELLIOTT_CORRECTION_LABELS = ['A', 'B', 'C'] as const;
 export interface ToolDefinition {
   readonly kind: DrawingKind;
   readonly label: string;
-  /** Anchors required before the drawing is complete. */
+  /** Anchors placement collects before finishing on its own. */
   readonly anchorCount: number;
+  /**
+   * Fewest anchors that still make a complete drawing, when the tool can be finished
+   * early. Defaults to `anchorCount`, which is every tool but the polyline: a path is a
+   * path at three points as much as at eight, and forcing eight clicks to draw a
+   * four-legged one is the sort of thing that makes a tool go unused.
+   */
+  readonly minAnchorCount?: number;
   readonly defaults: Drawing['params'];
 }
 

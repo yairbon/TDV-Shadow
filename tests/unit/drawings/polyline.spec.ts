@@ -25,12 +25,22 @@ const ZIGZAG: readonly Anchor[] = Array.from({ length: 8 }, (_, i) => ({
 const geometry = buildGeometry(makeDrawing('polyline', ZIGZAG), price, time, PLOT);
 
 describe('polyline geometry', () => {
-  it('needs eight anchors, and is incomplete until it has them', () => {
+  it('collects up to eight anchors but is a finished path from two', () => {
+    // Eight is a ceiling, not a shape: placement stops there on its own, and the user can
+    // finish sooner. Requiring all eight would mean a four-legged path renders as nothing.
     expect(TOOL_DEFINITIONS.polyline.anchorCount).toBe(8);
+    expect(TOOL_DEFINITIONS.polyline.minAnchorCount).toBe(2);
 
-    const short = buildGeometry(makeDrawing('polyline', ZIGZAG.slice(0, 7)), price, time, PLOT);
-    expect(short.complete).toBe(false);
-    expect(short.segments).toHaveLength(0);
+    for (const count of [2, 3, 5, 7]) {
+      const partial = buildGeometry(makeDrawing('polyline', ZIGZAG.slice(0, count)), price, time, PLOT);
+      expect(partial.complete).toBe(true);
+      expect(partial.segments).toHaveLength(count - 1);
+    }
+
+    // One anchor is a point, not a path, and has no segment to draw.
+    const single = buildGeometry(makeDrawing('polyline', ZIGZAG.slice(0, 1)), price, time, PLOT);
+    expect(single.complete).toBe(false);
+    expect(single.segments).toHaveLength(0);
   });
 
   it('strings one leg between each consecutive pair', () => {

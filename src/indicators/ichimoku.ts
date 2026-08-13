@@ -34,7 +34,7 @@ import {
   rollingMaxInto,
   rollingMinInto,
 } from './shared.js';
-import { TOKEN_BAND, TOKEN_LINE, TOKEN_LINE_ALT, TOKEN_LINE_NEGATIVE, TOKEN_LINE_POSITIVE } from './tokens.js';
+import { TOKEN_BAND, TOKEN_LINE, TOKEN_LINE_ALT, TOKEN_LINE_THIRD, TOKEN_LINE_POSITIVE } from './tokens.js';
 import type { IndicatorDefinition, IndicatorParams, IndicatorResult, PlotSpec } from './types.js';
 
 const ICHIMOKU_PLOTS: readonly PlotSpec[] = Object.freeze([
@@ -42,7 +42,7 @@ const ICHIMOKU_PLOTS: readonly PlotSpec[] = Object.freeze([
     key: 'chikou',
     label: 'Chikou',
     style: 'line',
-    colorToken: TOKEN_LINE_NEGATIVE,
+    colorToken: TOKEN_LINE_THIRD,
   }),
   Object.freeze<PlotSpec>({ key: 'tenkan', label: 'Tenkan', style: 'line', colorToken: TOKEN_LINE }),
   Object.freeze<PlotSpec>({

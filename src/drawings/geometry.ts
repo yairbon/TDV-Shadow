@@ -21,7 +21,7 @@ import {
   type Anchor,
   type Drawing,
 } from './types.js';
-import { DEFAULT_STYLE, TOOL_DEFINITIONS } from './tools.js';
+import { DEFAULT_STYLE, minimumAnchors, TOOL_DEFINITIONS } from './tools.js';
 
 export interface PriceProjector {
   y(price: number): number;
@@ -203,8 +203,9 @@ export function buildGeometry(
   time: TimeProjector,
   plot: PlotBox,
 ): DrawingGeometry {
-  const needed = TOOL_DEFINITIONS[drawing.kind].anchorCount;
-  if (drawing.anchors.length < needed) return empty(drawing, false);
+  // Completeness is the MINIMUM, not the full arity: a polyline finished at four points
+  // is a finished drawing, and gating on eight would render it as nothing.
+  if (drawing.anchors.length < minimumAnchors(drawing.kind)) return empty(drawing, false);
 
   const points = drawing.anchors.map((a) => projectAnchor(a, price, time));
   const base = { id: drawing.id, kind: drawing.kind, style: drawing.style, complete: true } as const;
@@ -619,7 +620,9 @@ export function buildPreviewGeometry(
 ): DrawingGeometry {
   const visible: readonly Anchor[] = [...placed, cursor];
   const anchors = [...visible];
-  const needed = TOOL_DEFINITIONS[kind].anchorCount;
+  // Pad to the MINIMUM, not the full arity: padding a polyline out to eight copies of the
+  // cursor adds degenerate segments to the preview that the finished drawing will not have.
+  const needed = minimumAnchors(kind);
   while (anchors.length < needed) anchors.push(cursor);
 
   const provisional: Drawing = {

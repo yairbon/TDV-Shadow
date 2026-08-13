@@ -25,7 +25,7 @@ import type {
   ViewportState,
 } from '../mcp/controlApi.js';
 import { CONTROL_API_VERSION } from '../mcp/controlApi.js';
-import { computeIndicator } from '../indicators/registry.js';
+import { computeIndicator, getIndicator, INDICATOR_IDS } from '../indicators/registry.js';
 import { candleGeometry } from '../renderer/scale/timeScale.js';
 
 /**
@@ -37,6 +37,10 @@ const MIN_GAP_SPACING = 2;
 export interface ControlContext {
   symbol: string;
   timeframe: Timeframe;
+  /** The armed drawing tool. Read on every `getState`, so it must be live, not a copy. */
+  activeTool?: () => string;
+  /** Every drawing kind this build can place — what the rail should be able to reach. */
+  toolKinds?: readonly string[];
   /** Swaps the loaded series. Supplied by main.ts, which owns chart construction. */
   switchSymbol?: (symbol: string) => void;
   /** Symbols this build can actually load. */
@@ -96,6 +100,7 @@ export function installControlApi(getChart: () => Chart | null, context: Control
         placement: computeIndicator(i.id, [], i.params).placement,
       })),
       drawings: drawingHandles(),
+      activeTool: context.activeTool?.() ?? '',
       frameCount: dump?.frameCount ?? 0,
       frameStats: chart.frameStats(),
     };
@@ -133,6 +138,16 @@ export function installControlApi(getChart: () => Chart | null, context: Control
     version: CONTROL_API_VERSION,
 
     getState: state,
+
+    /** Every drawing kind this build can place. Static; safe to call before a chart exists. */
+    toolKinds: () => context.toolKinds ?? [],
+
+    indicatorIds: () => INDICATOR_IDS,
+
+    indicatorPlacement(id) {
+      const known = INDICATOR_IDS.find((candidate) => candidate === id);
+      return known === undefined ? 'unknown' : getIndicator(known).placement;
+    },
 
     getIntegrityReport(): IntegrityReport {
       const chart = require();

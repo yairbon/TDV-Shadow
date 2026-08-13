@@ -40,6 +40,13 @@ export interface ChartState {
   readonly viewport: ViewportState;
   readonly indicators: readonly IndicatorHandle[];
   readonly drawings: readonly DrawingHandle[];
+  /**
+   * The armed drawing tool, `'measure'`, or `''` for the cursor.
+   *
+   * Reported because arming is a mode: a caller that clicks the plot gets a drawing or a
+   * selection depending on this, and until now nothing outside the page could tell which.
+   */
+  readonly activeTool: string;
   readonly frameCount: number;
   /**
    * Rolling frame-time statistics in CSS ms (10.1). p95 is the number the budget check
@@ -109,6 +116,12 @@ export interface ChartControlApi {
   readonly version: string;
 
   getState(): ChartState;
+  /** Every drawing kind this build can place. Static, and safe before a chart exists. */
+  toolKinds(): readonly string[];
+  /** Every indicator id this build registers. Static. */
+  indicatorIds(): readonly string[];
+  /** Where an indicator draws: its own pane, or over the price plot. */
+  indicatorPlacement(id: string): 'pane' | 'overlay' | 'unknown';
   getIntegrityReport(): IntegrityReport;
 
   setSymbol(symbol: string, timeframe?: Timeframe): ChartState;

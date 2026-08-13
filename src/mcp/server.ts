@@ -24,6 +24,7 @@ import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 
 import { CHART_TYPES } from '../charts/types.js';
+import { INDICATOR_IDS } from '../indicators/registry.js';
 import { DRAWING_KINDS } from '../drawings/types.js';
 import { TIMEFRAMES } from '../data/types.js';
 import type { ChartControlApi } from './controlApi.js';
@@ -120,10 +121,20 @@ const json = (value: unknown): { content: { type: 'text'; text: string }[] } => 
 
 const server = new McpServer({ name: 'tdv-shadow', version: '1.0.0' });
 
-const INDICATOR_IDS = [
-  'sma', 'ema', 'wma', 'vwap', 'bollinger', 'macd', 'rsi', 'stochastic', 'atr',
-  'volume', 'volume-profile',
-] as const;
+/**
+ * Derived from the registry rather than restated here.
+ *
+ * A second hand-maintained list is a list that goes stale: the nine indicators added in
+ * Tier 3 were addressable from the browser the moment they were registered and invisible
+ * over MCP, because this array did not know about them. Validating by membership keeps one
+ * source of truth; the ids still reach the client through the description below.
+ */
+const indicatorId = z
+  .string()
+  .refine((value) => (INDICATOR_IDS as readonly string[]).includes(value), {
+    message: 'unknown indicator id',
+  })
+  .describe(`One of: ${INDICATOR_IDS.join(', ')}`);
 
 // --- session ---------------------------------------------------------------
 
@@ -259,7 +270,7 @@ server.registerTool(
     description:
       'Add an indicator. Overlays draw on the price plot; the rest get their own pane. Returns a handle id.',
     inputSchema: {
-      id: z.enum(INDICATOR_IDS),
+      id: indicatorId,
       period: z.number().int().positive().optional(),
       source: z.enum(['open', 'high', 'low', 'close', 'hl2', 'hlc3', 'ohlc4']).optional(),
       stdDev: z.number().positive().optional(),

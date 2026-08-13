@@ -31,3 +31,12 @@ export const TOKEN_PROFILE = 'indicatorProfile';
  */
 export const TOKEN_LINE_POSITIVE = 'upVolume';
 export const TOKEN_LINE_NEGATIVE = 'indicatorLineAlt';
+
+/**
+ * A third line, distinct from both `TOKEN_LINE` and `TOKEN_LINE_ALT`.
+ *
+ * Ichimoku is the reason: it plots five lines at once, and with only two general-purpose
+ * line tokens the lagging span came out the same colour as the base line — two things
+ * that mean opposite ends of the same chart, drawn identically.
+ */
+export const TOKEN_LINE_THIRD = 'indicatorLineThird';

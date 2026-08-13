@@ -18,6 +18,7 @@ export type RecordedOp =
   | 'clip'
   | 'moveTo'
   | 'lineTo'
+  | 'arc'
   | 'stroke'
   | 'fill'
   | 'setLineDash'
@@ -92,6 +93,10 @@ export class FakeContext {
 
   fillText(text: string, x: number, y: number): void {
     this.#record('fillText', [x, y], text);
+  }
+
+  arc(x: number, y: number, radius: number, start: number, end: number): void {
+    this.#record('arc', [x, y, radius, start, end]);
   }
 
   measureText(text: string): { width: number } {

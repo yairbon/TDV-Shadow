@@ -67,6 +67,7 @@ import { indexAtTime, remapIndex } from '../charts/remap.js';
 import { alignByTime, rebase, type ComparisonSeries } from '../charts/compare.js';
 import { drawCompareSeries } from '../renderer/layers/compareLayer.js';
 import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
+import { getIndicator } from '../indicators/registry.js';
 import {
   createFeatureState,
   createIndicatorMemo,
@@ -82,14 +83,15 @@ import type { TimeZone } from '../renderer/scale/timezone.js';
 import { createChartCanvases, type ChartCanvases, type LayerName } from '../ui/chartCanvas.js';
 import { snapLine } from '../renderer/pixel.js';
 
-/** Indicators that render in their own pane rather than over the price plot. */
-const PANE_INDICATORS: ReadonlySet<IndicatorId> = new Set<IndicatorId>([
-  'macd',
-  'rsi',
-  'stochastic',
-  'atr',
-  'volume',
-]);
+/**
+ * Indicators that render in their own pane rather than over the price plot.
+ *
+ * Read from each definition's own `placement` rather than listed here. A hand-kept list
+ * is a list that goes stale, and this one had: the six pane indicators added in Tier 3
+ * computed correctly, printed their values in the legend, and were allocated no pane to
+ * draw in — visible only as a legend row for a plot that was nowhere on the chart.
+ */
+const isPaneIndicator = (id: IndicatorId): boolean => getIndicator(id).placement === 'pane';
 
 export type RendererMode = 'canvas2d' | 'webgl';
 
@@ -498,7 +500,7 @@ export function createChart(o: ChartOptions): Chart {
   // --- surfaces -----------------------------------------------------------
   /** Pane indicators each get their own rect; the count drives the layout. */
   const paneCount = (): number =>
-    features.indicators.filter((i) => PANE_INDICATORS.has(i.id)).length;
+    features.indicators.filter((i) => isPaneIndicator(i.id)).length;
 
   const relayout = (cssWidth: number, cssHeight: number): Layout =>
     computeLayout(layoutOptions(cssWidth, cssHeight));
