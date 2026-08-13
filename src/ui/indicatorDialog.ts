@@ -13,9 +13,18 @@
  */
 
 import { getIndicator } from '../indicators/registry.js';
-import type { IndicatorId, IndicatorParams, PlotSpec } from '../indicators/types.js';
+import { PRICE_SOURCES, type IndicatorId, type IndicatorParams, type PlotSpec } from '../indicators/types.js';
+import { parseIndicatorSource } from '../indicators/derived.js';
 import type { PlotStyles, PlotStyleOverride } from '../renderer/layers/annotationsLayer.js';
-import { colorField, createSheet, footer, numberField, selectField, sheetForm } from './sheet.js';
+import {
+  colorField,
+  createSheet,
+  footer,
+  numberField,
+  selectField,
+  sheetForm,
+  type SelectOption,
+} from './sheet.js';
 
 export interface IndicatorSettings {
   readonly params: IndicatorParams;
@@ -33,6 +42,14 @@ export interface IndicatorDialog {
     readonly params: IndicatorParams;
     readonly styles: PlotStyles;
     readonly plots: readonly PlotSpec[];
+    /**
+     * Plots of OTHER indicators this one may read instead of price.
+     *
+     * Supplied by the caller rather than discovered here: which indicators are on the
+     * chart, and which of them sit earlier in the stack than this one, is the chart's
+     * knowledge. An empty list simply leaves the Source picker as price fields only.
+     */
+    readonly sources?: readonly SelectOption[];
     readonly onApply: (settings: IndicatorSettings) => void;
     /** Called once, with the state as it was on open, if the user cancels. */
     readonly onCancel: (settings: IndicatorSettings) => void;
@@ -83,13 +100,31 @@ const FIELDS: Readonly<Record<string, FieldSpec | undefined>> = {
   source: { kind: 'source', label: 'Source' },
 };
 
-const SOURCES: readonly string[] = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'];
+const SOURCES: readonly string[] = [...PRICE_SOURCES];
 
 const DASHES: readonly { readonly label: string; readonly dash: readonly number[] }[] = [
   { label: 'Solid', dash: [] },
   { label: 'Dashed', dash: [6, 4] },
   { label: 'Dotted', dash: [2, 3] },
 ];
+
+/**
+ * The indicator sources to offer, with the current value retained even if it has gone.
+ *
+ * A `<select>` whose value matches no option silently reports the FIRST option instead, so
+ * removing the parent indicator would make the dialog claim this one reads `close` while
+ * the stored param still said otherwise — and the next edit would write that claim back.
+ */
+function sourceOptions(
+  offered: readonly SelectOption[] | undefined,
+  current: number | string | undefined,
+): readonly SelectOption[] {
+  const list = offered ?? [];
+  if (typeof current !== 'string') return list;
+  if (parseIndicatorSource(current) === null) return list;
+  if (list.some((option) => option.value === current)) return list;
+  return [...list, { value: current, label: `${current} (removed)` }];
+}
 
 /** Default swatch when the user has not chosen a colour yet. */
 const FALLBACK_COLOR = '#2962ff';
@@ -137,7 +172,11 @@ export function createIndicatorDialog(host: HTMLElement = document.body): Indica
             selectField({
               label: spec.label,
               dataset: { param: name },
-              options: SOURCES,
+              // Price fields first, then anything already on the chart. A derived source
+              // that is no longer offered — its indicator was removed — would otherwise
+              // leave the select showing the first option while the param still held the
+              // old reference, so it is kept in the list, marked as gone.
+              options: [...SOURCES, ...sourceOptions(request.sources, params.get(name))],
               value: String(params.get(name) ?? 'close'),
               onChange: (value) => {
                 params.set(name, value);

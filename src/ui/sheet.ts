@@ -110,11 +110,21 @@ export function numberField(o: NumberFieldOptions): HTMLLabelElement {
   return labelled(o.label, input);
 }
 
+/** An option whose stored value differs from what the user reads. */
+export interface SelectOption {
+  readonly value: string;
+  readonly label: string;
+}
+
 export interface SelectFieldOptions {
   readonly label: string;
   readonly id?: string;
   readonly dataset?: Readonly<Record<string, string>>;
-  readonly options: readonly string[];
+  /**
+   * Bare strings when the value IS the label; `{value, label}` when they differ — an
+   * indicator source is stored as `"i2:rsi"` and has to read as `RSI · rsi`.
+   */
+  readonly options: readonly (string | SelectOption)[];
   readonly value: string;
   readonly onChange: (value: string) => void;
 }
@@ -125,8 +135,8 @@ export function selectField(o: SelectFieldOptions): HTMLLabelElement {
   for (const [key, value] of Object.entries(o.dataset ?? {})) select.dataset[key] = value;
   for (const option of o.options) {
     const node = document.createElement('option');
-    node.value = option;
-    node.textContent = option;
+    node.value = typeof option === 'string' ? option : option.value;
+    node.textContent = typeof option === 'string' ? option : option.label;
     select.append(node);
   }
   select.value = o.value;

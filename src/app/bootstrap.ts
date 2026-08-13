@@ -45,6 +45,7 @@ import {
   type AlertGeometry,
   drawIndicatorOverlay,
   drawIndicatorPane,
+  type PaneCompanion,
   drawLastPrice,
   drawMeasure,
   drawVolumeProfile,
@@ -66,8 +67,14 @@ import { timeOf, type ChartType, type ChartTypeParams, type DerivedSeries } from
 import { indexAtTime, remapIndex } from '../charts/remap.js';
 import { alignByTime, rebase, type ComparisonSeries } from '../charts/compare.js';
 import { drawCompareSeries } from '../renderer/layers/compareLayer.js';
-import type { IndicatorId, IndicatorParams, VolumeProfileResult } from '../indicators/types.js';
-import { getIndicator } from '../indicators/registry.js';
+import type {
+  IndicatorId,
+  IndicatorParams,
+  IndicatorResult,
+  VolumeProfileResult,
+} from '../indicators/types.js';
+import { computeIndicator, getIndicator } from '../indicators/registry.js';
+import { deriveOver, parseIndicatorSource } from '../indicators/derived.js';
 import {
   createFeatureState,
   createIndicatorMemo,
@@ -229,6 +236,24 @@ export interface Chart {
   ): ActiveIndicator | null;
   removeIndicator(handleId: string): boolean;
   listIndicators(): readonly ActiveIndicator[];
+  /**
+   * The computed result for one live indicator, exactly as the renderer sees it.
+   *
+   * Exposed because an indicator's values are not a function of its id and params alone —
+   * one reading another indicator's output is resolved against the live stack — so a
+   * caller that recomputed from the handle would report a different curve from the one on
+   * screen. It was doing precisely that.
+   */
+  indicatorResult(handleId: string): IndicatorResult | null;
+  /**
+   * The handle of the pane this indicator is drawn into, or null when it has its own home
+   * (its own pane, or the price plot).
+   *
+   * `placement` alone stopped being the answer once an indicator could be computed from
+   * another: an SMA is an overlay, but an SMA of an RSI is drawn in the RSI's pane, and
+   * nothing outside the frame loop could say so.
+   */
+  indicatorPaneHost(handleId: string): string | null;
   /** Geometry of every drawing in the last frame — used for anchor verification. */
   drawingGeometry(): readonly DrawingGeometry[];
   /**
@@ -412,6 +437,97 @@ export function createChart(o: ChartOptions): Chart {
   const alertListeners = new Set<(alert: Alert) => void>();
   const seriesMemo = createSeriesMemo();
   const indicatorMemo = createIndicatorMemo();
+
+  /**
+   * One indicator's result, computed over the chart's bars or over another indicator's.
+   *
+   * `params.source` normally names a price field; when it reads `"<handleId>:<plotKey>"`
+   * it names a plot of an indicator ALREADY on the chart, whose output is fed in as the
+   * price series (see `derived.ts`).
+   *
+   * The source must sit EARLIER in the stack than the indicator reading it. That single
+   * rule makes a cycle structurally impossible rather than something to detect and
+   * recover from, and it matches how the feature is reached: you apply an indicator to
+   * one that is already there. A source that is missing, later in the stack, or names a
+   * plot that does not exist falls back to the chart's own bars — a wrong curve is worse
+   * than an unsurprising one.
+   */
+  /**
+   * The indicator whose output `indicator` reads, or null when it reads price.
+   *
+   * The source must sit EARLIER in the stack than the indicator reading it. That single
+   * rule makes a cycle structurally impossible rather than something to detect and
+   * recover from, and it matches how the feature is reached: you apply an indicator to
+   * one that is already there. A source that is missing, later in the stack, or names a
+   * plot that does not exist falls back to price — a wrong curve is worse than a plain one.
+   */
+  const parentOf = (
+    indicator: ActiveIndicator,
+  ): { readonly parent: ActiveIndicator; readonly plotKey: string } | null => {
+    const source = parseIndicatorSource(indicator.params.source);
+    if (source === null) return null;
+    const stack = features.indicators;
+    const parentAt = stack.findIndex((i) => i.handleId === source.handleId);
+    if (parentAt < 0) return null;
+    const selfAt = stack.findIndex((i) => i.handleId === indicator.handleId);
+    if (selfAt >= 0 && parentAt >= selfAt) return null;
+    return { parent: stack[parentAt], plotKey: source.plotKey };
+  };
+
+  /**
+   * Cache key for an indicator, INCLUDING everything it is computed from.
+   *
+   * Recursive, and that is the point: a child's own params do not change when its parent's
+   * period does, and neither do a grandchild's when the grandparent's does. Keying one
+   * level up would leave a three-deep stack serving a curve derived from a series that no
+   * longer exists.
+   */
+  const keyFor = (indicator: ActiveIndicator): string => {
+    const link = parentOf(indicator);
+    return link === null
+      ? indicatorMemo.keyOf(indicator.id, indicator.params)
+      : indicatorMemo.keyOf(indicator.id, indicator.params, keyFor(link.parent));
+  };
+
+  /**
+   * The pane-placed indicator whose rect this one should share, or null for its own home.
+   *
+   * An overlay indicator draws wherever its SOURCE lives. A moving average of an RSI is in
+   * the RSI's units, so drawing it over the price plot puts it hundreds of points off the
+   * visible range — clipped away entirely, which is how it first shipped. An indicator
+   * with a pane of its own (an RSI of an SMA) keeps that pane: its units are its own.
+   */
+  const paneHostOf = (indicator: ActiveIndicator): ActiveIndicator | null => {
+    if (getIndicator(indicator.id).placement === 'pane') return null;
+    const link = parentOf(indicator);
+    if (link === null) return null;
+    return getIndicator(link.parent.id).placement === 'pane' ? link.parent : paneHostOf(link.parent);
+  };
+
+  /** One indicator's result, over the chart's bars or over another indicator's output. */
+  const resultFor = (
+    indicator: ActiveIndicator,
+    bars: readonly Bar[],
+    revision: number,
+  ): IndicatorResult => {
+    const link = parentOf(indicator);
+    if (link === null) {
+      return indicatorMemo.compute(
+        indicator.handleId,
+        revision,
+        indicator.id,
+        indicator.params,
+        bars,
+      );
+    }
+    const parentResult = resultFor(link.parent, bars, revision);
+    return indicatorMemo.memo(indicator.handleId, revision, keyFor(indicator), () => {
+      const derived = deriveOver(bars, parentResult, link.plotKey, (over) =>
+        computeIndicator(indicator.id, over, indicator.params),
+      );
+      return derived ?? computeIndicator(indicator.id, bars, indicator.params);
+    });
+  };
   let handleCounter = 0;
   let lastGeometry: readonly DrawingGeometry[] = [];
   /** Alert pixel positions from the last frame — the same trick hit-testing drawings uses. */
@@ -679,10 +795,25 @@ export function createChart(o: ChartOptions): Chart {
     const priceScale = { y: (value: number) => input.priceScale.y(asPrice(value)) };
 
     const { overlays, panes } = splitByPlacement(features.indicators, (indicator) =>
-      indicatorMemo.compute(indicator.handleId, revision, indicator.id, indicator.params, bars),
+      resultFor(indicator, bars, revision),
     );
 
-    for (const { indicator, result } of overlays) {
+    // Overlays that belong in someone else's pane are taken out of the price plot and
+    // handed to that pane below.
+    const adopted = new Map<string, PaneCompanion[]>();
+    const priceOverlays: { indicator: ActiveIndicator; result: IndicatorResult }[] = [];
+    for (const entry of overlays) {
+      const host = paneHostOf(entry.indicator);
+      if (host === null) {
+        priceOverlays.push(entry);
+        continue;
+      }
+      const list = adopted.get(host.handleId) ?? [];
+      list.push({ result: entry.result, styles: entry.indicator.styles });
+      adopted.set(host.handleId, list);
+    }
+
+    for (const { indicator, result } of priceOverlays) {
       if (result.id === 'volume-profile') {
         drawVolumeProfile(ctx, result as VolumeProfileResult, overlayInput, priceScale);
         continue;
@@ -716,6 +847,7 @@ export function createChart(o: ChartOptions): Chart {
         rect,
         geometry.width,
         panes[i].indicator.styles,
+        adopted.get(panes[i].indicator.handleId) ?? [],
       );
 
       // Pane title, so three stacked oscillators are still tellable apart.
@@ -1305,6 +1437,20 @@ export function createChart(o: ChartOptions): Chart {
       return true;
     },
     listIndicators: () => features.indicators,
+
+    indicatorPaneHost(handleId) {
+      const indicator = features.indicators.find((i) => i.handleId === handleId);
+      if (indicator === undefined) return null;
+      return paneHostOf(indicator)?.handleId ?? null;
+    },
+
+    indicatorResult(handleId) {
+      const indicator = features.indicators.find((i) => i.handleId === handleId);
+      if (indicator === undefined) return null;
+      // The same snapshot the frame draws from, so replay and resampling agree with
+      // what is on screen rather than reading the untrimmed store.
+      return resultFor(indicator, visibleSnapshot().series.bars, dataRevision());
+    },
     drawingGeometry: () => lastGeometry,
     hitTestAt(x, y, tolerance = 7) {
       const hits = hitTest({ x, y }, lastGeometry, tolerance);
@@ -1316,13 +1462,7 @@ export function createChart(o: ChartOptions): Chart {
       const bars = input.snapshot.series.bars;
       const i = Math.min(bars.length - 1, Math.max(0, Math.round(index)));
       return features.indicators.map((indicator) => {
-        const result = indicatorMemo.compute(
-          indicator.handleId,
-          dataRevision(),
-          indicator.id,
-          indicator.params,
-          bars,
-        );
+        const result = resultFor(indicator, bars, dataRevision());
         return {
           handleId: indicator.handleId,
           label: `${indicator.id.toUpperCase()}${

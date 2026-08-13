@@ -1200,6 +1200,35 @@ const indicatorDialog = createIndicatorDialog();
  * Undo is captured ONCE, on open, not per keystroke — otherwise typing "50" over "20"
  * would leave three separate undo steps for one edit.
  */
+/**
+ * Plots this indicator may read INSTEAD of price — every plot of every indicator that sits
+ * earlier in the stack than it does.
+ *
+ * Earlier only, which is the same rule the chart enforces when resolving one: it makes a
+ * cycle impossible by construction rather than something to detect, and it means the
+ * picker never offers a choice the chart would silently refuse.
+ */
+function indicatorSourcesFor(handleId: string): { value: string; label: string }[] {
+  const active = currentChart();
+  if (active === null) return [];
+  const stack = active.listIndicators();
+  const selfAt = stack.findIndex((i) => i.handleId === handleId);
+  if (selfAt < 0) return [];
+  const options: { value: string; label: string }[] = [];
+  for (const candidate of stack.slice(0, selfAt)) {
+    const plots = computeIndicator(candidate.id, [], candidate.params).plots;
+    for (const plot of plots) {
+      options.push({
+        value: `${candidate.handleId}:${plot.key}`,
+        // The plot name only when the indicator draws more than one, so a lone RSI reads
+        // as "RSI" rather than "RSI · rsi".
+        label: plots.length === 1 ? candidate.id.toUpperCase() : `${candidate.id.toUpperCase()} · ${plot.label}`,
+      });
+    }
+  }
+  return options;
+}
+
 function openIndicatorSettings(handleId: string): void {
   const active = currentChart();
   if (active === null) return;
@@ -1212,6 +1241,7 @@ function openIndicatorSettings(handleId: string): void {
     handleId,
     params: indicator.params,
     styles: indicator.styles,
+    sources: indicatorSourcesFor(handleId),
     // Plots are asked of the indicator itself, with no bars: the declaration is part of
     // the result, so this is the only honest source for "which lines does this draw".
     plots: computeIndicator(indicator.id, [], indicator.params).plots,

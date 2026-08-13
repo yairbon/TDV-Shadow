@@ -262,6 +262,29 @@ indicator's own definition already declares, and all three had gone stale:
 
 All three now derive from the registry, and a test walks it rather than naming ids.
 
+- **Indicator on indicator.** An SMA of an RSI, a Bollinger band around an OBV. The source
+  indicator's output is fed to the second one AS the price series, so all twenty stack on
+  all twenty without a single definition learning about it — the alternative, threading an
+  optional source array through every `compute`, would have touched every one and left each
+  free to ignore it. `params.source` carries either a price field or `"<handle>:<plot>"`;
+  one field rather than two, because two could disagree and there is no principled answer
+  to which wins. A source must sit EARLIER in the stack, which makes a cycle impossible by
+  construction rather than something to detect.
+
+  Three things this turned up:
+
+  - Warm-up has to be CLIPPED before computing and padded back after. The kernels carry
+    running sums, and one NaN entering a running sum keeps it NaN for the rest of the
+    array — a 9-period SMA over a 14-period RSI came out empty for all 200 bars, not
+    merely late.
+  - `readIndicator` recomputed from id and params alone, so the control API reported a
+    curve with a different warm-up and different values from the one on the chart. It asks
+    the chart now.
+  - An overlay indicator has to draw where its SOURCE lives. An SMA of an RSI is in the
+    RSI's units, so on the price plot it sat hundreds of points outside the visible range
+    and was clipped away entirely: correct values, nothing on screen. It joins the RSI's
+    pane, on the RSI's scale, in a colour the RSI is not already using.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

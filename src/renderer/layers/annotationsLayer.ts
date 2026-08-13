@@ -308,6 +308,12 @@ export function drawVolumeProfile(
 }
 
 /** Draws a pane indicator (RSI, MACD, ATR, Stochastic, Volume) in its own rect. */
+/** An indicator sharing a pane with the one that owns it — an SMA of the RSI beside it. */
+export interface PaneCompanion {
+  readonly result: IndicatorResult;
+  readonly styles: PlotStyles;
+}
+
 export function drawIndicatorPane(
   ctx: CanvasRenderingContext2D,
   result: IndicatorResult,
@@ -315,6 +321,14 @@ export function drawIndicatorPane(
   pane: Rect,
   barWidth: number,
   styles: PlotStyles = {},
+  /**
+   * Indicators computed FROM this one, drawn in the same rect on the same scale.
+   *
+   * Same scale is the whole point: a moving average of an RSI is in the RSI's units, and
+   * giving it its own scale would put a smoothed copy of a line beside that line at a
+   * different height, which reads as two unrelated series.
+   */
+  companions: readonly PaneCompanion[] = [],
 ): void {
   // Pane scale: fixed bounds when the indicator declares them (RSI 0..100), else
   // autoscale over the visible values only.
@@ -323,13 +337,15 @@ export function drawIndicatorPane(
   if (result.scaleBounds !== null) {
     [min, max] = result.scaleBounds;
   } else {
-    for (const plot of result.plots) {
-      const values = result.values[plot.key];
-      for (let i = input.from; i <= input.to; i++) {
-        const v = values[i];
-        if (Number.isNaN(v)) continue;
-        min = Math.min(min, v);
-        max = Math.max(max, v);
+    for (const source of [result, ...companions.map((c) => c.result)]) {
+      for (const plot of source.plots) {
+        const values = source.values[plot.key];
+        for (let i = input.from; i <= input.to; i++) {
+          const v = values[i];
+          if (Number.isNaN(v)) continue;
+          min = Math.min(min, v);
+          max = Math.max(max, v);
+        }
       }
     }
     if (!Number.isFinite(min) || !Number.isFinite(max)) return;
@@ -363,15 +379,41 @@ export function drawIndicatorPane(
   }
   ctx.setLineDash([]);
 
-  for (const plot of result.plots) {
-    const values = result.values[plot.key];
-    if (plot.style === 'histogram') {
-      fillHistogram(ctx, values, input, scale, input.theme, barWidth);
-      continue;
+  /**
+   * Colours already spoken for in this pane.
+   *
+   * A companion declares the same token its host does — an SMA says `overlayLine` whether
+   * it is smoothing an RSI or a price — so without this a smoothed copy is drawn in the
+   * exact colour of the line it smooths, and the pane shows one indicator wearing two
+   * shapes. Shifting only on a COLLISION means an indicator that already picked a distinct
+   * colour keeps it.
+   */
+  const taken = new Set<string>();
+  const distinct = (preferred: string): string => {
+    if (!taken.has(preferred)) return preferred;
+    for (const token of ['indicatorLineThird', 'indicatorLineAlt', 'upVolume']) {
+      const candidate = resolveToken(input.theme, token);
+      if (!taken.has(candidate)) return candidate;
     }
-    const color = resolveToken(input.theme, plot.colorToken);
-    if (plot.style === 'dots') drawDots(ctx, values, input, scale, color, styles[plot.key]);
-    else strokePlot(ctx, values, input, scale, color, styles[plot.key]);
+    return preferred;
+  };
+
+  // The owner first, then anything derived from it — a smoothed copy belongs on top of
+  // the line it smooths, not underneath it.
+  for (const [index, source] of [{ result, styles }, ...companions].entries()) {
+    for (const plot of source.result.plots) {
+      const values = source.result.values[plot.key];
+      if (plot.style === 'histogram') {
+        fillHistogram(ctx, values, input, scale, input.theme, barWidth);
+        continue;
+      }
+      const declared = resolveToken(input.theme, plot.colorToken);
+      const color = index === 0 ? declared : distinct(declared);
+      taken.add(color);
+      const override = source.styles[plot.key];
+      if (plot.style === 'dots') drawDots(ctx, values, input, scale, color, override);
+      else strokePlot(ctx, values, input, scale, color, override);
+    }
   }
 
   ctx.restore();

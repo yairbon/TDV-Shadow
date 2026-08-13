@@ -314,7 +314,11 @@ export function installControlApi(getChart: () => Chart | null, context: Control
       const indicator = chart.listIndicators().find((i) => i.handleId === handleId);
       if (indicator === undefined) return [];
       const bars = chart.series.get().bars;
-      const result = computeIndicator(indicator.id, bars, indicator.params);
+      // Asked of the chart, not recomputed here: an indicator reading another indicator's
+      // output is resolved against the live stack, so recomputing from id+params alone
+      // reported a curve — different warm-up, different values — that was never drawn.
+      const result = chart.indicatorResult(handleId);
+      if (result === null) return [];
       const start = Math.max(0, from ?? 0);
       const end = Math.min(bars.length - 1, to ?? bars.length - 1);
       const rows: IndicatorRow[] = [];

@@ -89,23 +89,52 @@ export interface IndicatorMemo {
     id: IndicatorId,
     params: IndicatorParams,
     bars: readonly Bar[],
+    /**
+     * Identity of the series `bars` came from, when it is not the chart's own.
+     *
+     * An indicator computed over ANOTHER indicator's output is keyed by its own id and
+     * params like any other — but those are unchanged when the parent's period moves, so
+     * without this the child would serve a cached result computed from a series that no
+     * longer exists. Callers pass the parent's cache key; the revision alone cannot
+     * carry it, because a parameter change does not touch the data revision.
+     */
+    sourceKey?: string,
   ): IndicatorResult;
+  /** The cache key `compute` would use — for a caller stacking one indicator on another. */
+  keyOf(id: IndicatorId, params: IndicatorParams, sourceKey?: string): string;
+  /**
+   * The same cache, keyed explicitly, for a result that is not a plain `computeIndicator`.
+   *
+   * An indicator over another indicator's output is assembled rather than computed — the
+   * source's warm-up is clipped, the inner result padded back — and memoising only the
+   * inner call would re-run that assembly, allocating an array per plot, on every frame
+   * that hits the cache. This memoises the finished thing.
+   */
+  memo(handleId: string, revision: number, key: string, produce: () => IndicatorResult): IndicatorResult;
   misses(): number;
 }
+
+const cacheKey = (id: IndicatorId, params: IndicatorParams, sourceKey?: string): string =>
+  `${id}:${JSON.stringify(params)}${sourceKey === undefined ? '' : `@${sourceKey}`}`;
 
 export function createIndicatorMemo(): IndicatorMemo {
   const cache = new Map<string, IndicatorCacheEntry>();
   let misses = 0;
   return {
-    compute(handleId, revision, id, params, bars) {
-      const key = `${id}:${JSON.stringify(params)}`;
+    compute(handleId, revision, id, params, bars, sourceKey) {
+      return this.memo(handleId, revision, cacheKey(id, params, sourceKey), () =>
+        computeIndicator(id, bars, params),
+      );
+    },
+    memo(handleId, revision, key, produce) {
       const hit = cache.get(handleId);
       if (hit !== undefined && hit.revision === revision && hit.key === key) return hit.result;
       misses += 1;
-      const result = computeIndicator(id, bars, params);
+      const result = produce();
       cache.set(handleId, { revision, key, result });
       return result;
     },
+    keyOf: cacheKey,
     misses: () => misses,
   };
 }

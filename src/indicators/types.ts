@@ -103,7 +103,17 @@ export interface IndicatorParams {
   readonly tenkanPeriod?: number;
   readonly kijunPeriod?: number;
   readonly senkouBPeriod?: number;
-  readonly source?: 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4';
+  /**
+   * Which series the indicator reads.
+   *
+   * A price field, or `"<handleId>:<plotKey>"` naming a plot of another indicator already
+   * on the chart — an SMA of an RSI. The two live in ONE field rather than two because a
+   * second field could disagree with this one, and there would be no principled answer to
+   * which wins. `sourceValue` treats anything it does not recognise as `close`, which is
+   * what makes the widening safe for the indicators themselves: by the time they see a
+   * derived series it has already been projected into bars whose OHLC are all one value.
+   */
+  readonly source?: PriceSource | (string & {});
   /** Volume Profile: number of price buckets and the value-area share (default 70). */
   readonly buckets?: number;
   readonly valueAreaPercent?: number;
@@ -118,22 +128,47 @@ export interface IndicatorDefinition {
   compute(bars: readonly Bar[], params: IndicatorParams): IndicatorResult;
 }
 
-/** Extracts the configured price source for a bar. */
+export type PriceSource = 'open' | 'high' | 'low' | 'close' | 'hl2' | 'hlc3' | 'ohlc4';
+
+/** The price fields a source may name, for building a picker. */
+export const PRICE_SOURCES: readonly PriceSource[] = Object.freeze([
+  'close',
+  'open',
+  'high',
+  'low',
+  'hl2',
+  'hlc3',
+  'ohlc4',
+]);
+
+/**
+ * How each price source reads a bar.
+ *
+ * A `Record` over `PriceSource` rather than a switch, so adding a source without a reader
+ * is a type error — and so the lookup below can be total over the WIDENED `source` type
+ * without giving up that check.
+ */
+const PRICE_READERS: Readonly<Record<PriceSource, (bar: Bar) => number>> = Object.freeze({
+  open: (bar) => bar.o,
+  high: (bar) => bar.h,
+  low: (bar) => bar.l,
+  close: (bar) => bar.c,
+  hl2: (bar) => (bar.h + bar.l) / 2,
+  hlc3: (bar) => (bar.h + bar.l + bar.c) / 3,
+  ohlc4: (bar) => (bar.o + bar.h + bar.l + bar.c) / 4,
+});
+
+const READERS = new Map<string, (bar: Bar) => number>(Object.entries(PRICE_READERS));
+
+/**
+ * Extracts the configured price source for a bar.
+ *
+ * A source that is not a price field is a reference to another indicator's plot, resolved
+ * before the indicator is called (see `derived.ts`). Those bars arrive with `o`, `h`, `l`
+ * and `c` all equal, so falling back to the close here is not a guess — every field would
+ * give the same number.
+ */
 export function sourceValue(bar: Bar, source: IndicatorParams['source'] = 'close'): number {
-  switch (source) {
-    case 'open':
-      return bar.o;
-    case 'high':
-      return bar.h;
-    case 'low':
-      return bar.l;
-    case 'hl2':
-      return (bar.h + bar.l) / 2;
-    case 'hlc3':
-      return (bar.h + bar.l + bar.c) / 3;
-    case 'ohlc4':
-      return (bar.o + bar.h + bar.l + bar.c) / 4;
-    case 'close':
-      return bar.c;
-  }
+  const read = READERS.get(source);
+  return read === undefined ? bar.c : read(bar);
 }
