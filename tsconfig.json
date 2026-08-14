@@ -32,6 +32,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "api/**/*.ts",
     "src/**/*.tsx",
     "tests/**/*.ts",
     "vite.config.ts",

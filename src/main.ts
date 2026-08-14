@@ -200,7 +200,13 @@ const market = createMarketData({
   // is the escape hatch for anyone serving a build behind their own proxy. Neither is true
   // of the published artifact, which is the case that must not light up six buttons it
   // cannot serve.
-  yahoo: import.meta.env.DEV || params.get('yahoo') === '1',
+  yahoo:
+    import.meta.env.DEV ||
+    // Set when the build is deployed alongside the proxy function in `api/yahoo`. Baked in
+    // at build time because a deployment either has that function or it does not, and the
+    // page cannot find out by asking.
+    import.meta.env['VITE_YAHOO_PROXY'] === '1' ||
+    params.get('yahoo') === '1',
   ...(params.get('apikey') === null ? {} : { twelveDataKey: params.get('apikey') ?? '' }),
   ...(params.get('avkey') === null ? {} : { alphaVantageKey: params.get('avkey') ?? '' }),
 });

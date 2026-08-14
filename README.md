@@ -35,6 +35,38 @@ Yahoo's endpoint is unofficial and can change without notice. That is why it sit
 the chain rather than alone: when it breaks, the request falls through to the keyed
 providers and then to the bundled files, instead of the chart going blank.
 
+## Using it on a phone or tablet
+
+**Over your own Wi-Fi**, with nothing to deploy:
+
+```bash
+npm run dev -- --host
+```
+
+Vite prints a **Network** address like `http://192.168.1.42:5173`. Open that on the tablet
+and you get the full app, intraday included — the proxy runs on the computer, the tablet is
+just the screen. Needs both devices on the same network and the computer awake.
+
+**From anywhere**, deploy it. A static build is not enough on its own: the whole point of
+the Yahoo route is that a *server* makes the outbound call, so the deployment needs the
+proxy function in `api/yahoo/` alongside the page.
+
+```bash
+npx vercel deploy --prod
+```
+
+`vercel.json` builds with `VITE_YAHOO_PROXY=1`, which is what turns the Yahoo provider on
+for a deployed build. Leave that out and the app correctly reports intraday unavailable
+rather than lighting up buttons it cannot serve.
+
+The deployed proxy forwards **only** the two endpoints this app calls. A public URL that
+relays any path is an open relay for other people's traffic; the allowlist lives in
+`src/providers/yahooProxy.ts` and is tested in `tests/unit/providers/yahooProxy.spec.ts`.
+Netlify and Cloudflare need their own thin wrapper around the same helper.
+
+Touch is supported throughout: drag to pan, pinch to zoom. Below about 1100px the toolbar
+collapses its controls into the **⋯** button, the ticker box included.
+
 ## Development
 
 ```bash
