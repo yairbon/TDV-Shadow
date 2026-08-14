@@ -321,12 +321,24 @@ export interface TimeTick {
   readonly major: boolean;
 }
 
-function labelStyleFor(unit: TimeUnit, monthChanged: boolean, yearChanged: boolean): TimeLabelStyle {
+function labelStyleFor(
+  unit: TimeUnit,
+  dayChanged: boolean,
+  monthChanged: boolean,
+  yearChanged: boolean,
+): TimeLabelStyle {
   if (yearChanged) return 'year';
   if (unit.kind === 'year') return 'year';
   if (unit.kind === 'month') return 'month';
   if (monthChanged) return 'month';
   if (unit.kind === 'day' || unit.kind === 'week') return 'day';
+  // A sub-daily unit whose tick lands on a new calendar day is labelled with the DAY, by
+  // the same promotion rule that already lifts a month or year boundary above its unit.
+  // Without it, a 5-minute chart zoomed out over two months chooses a 6-hour unit, emits
+  // one tick per session because that is where the period key changes, and prints the
+  // session's opening clock time on every single one — an axis reading
+  // "13:30 13:30 13:30 13:30" across the whole width, which locates nothing.
+  if (dayChanged) return 'day';
   return 'time';
 }
 
@@ -391,6 +403,7 @@ export function timeTicks(
     if (wantBreaks && utcDayKey(t) !== utcDayKey(prev)) breaks.push(scale.x(asBarIndex(i)));
     if (periodKey(t, unit) === periodKey(prev, unit)) continue;
 
+    const dayChanged = utcDayKey(t) !== utcDayKey(prev);
     const monthChanged = utcMonthKey(t) !== utcMonthKey(prev);
     const yearChanged = Math.floor(utcMonthKey(t) / 12) !== Math.floor(utcMonthKey(prev) / 12);
     const major = monthChanged || yearChanged;
@@ -406,7 +419,7 @@ export function timeTicks(
     out.push({
       index: asBarIndex(i),
       x: asPixel(x),
-      label: formatTimeLabel(t, labelStyleFor(unit, monthChanged, yearChanged)),
+      label: formatTimeLabel(t, labelStyleFor(unit, dayChanged, monthChanged, yearChanged)),
       major,
     });
   }

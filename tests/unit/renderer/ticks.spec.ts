@@ -184,6 +184,34 @@ describe('time ticks', () => {
     }
   });
 
+  it('labels a day boundary with the DATE, even on an intraday chart', () => {
+    // A 5-minute series zoomed out over weeks chooses a 6-hour unit, and because the data
+    // only exists during sessions the period key changes once per session — at the same
+    // clock time every day. Labelling those by clock printed "13:30" across the entire
+    // axis, which locates nothing. Reproduced here with 5m bars over several days.
+    const bars = makeBars(3_000, 300_000);
+    const scale = makeTimeScale(bars.length - 1, 1, plot);
+    const range = scale.visibleRange(bars.length);
+    const ticks = timeTicks(bars, range, scale, 300_000, 60).ticks;
+
+    expect(ticks.length).toBeGreaterThan(2);
+    const labels = ticks.map((tick) => tick.label);
+    // Not one repeated clock time.
+    expect(new Set(labels).size).toBeGreaterThan(1);
+    // And the ones that cross a day read as a date, not a time.
+    expect(labels.some((label) => !label.includes(':'))).toBe(true);
+  });
+
+  it('still labels a within-day tick with the clock', () => {
+    // The promotion must not swallow the ordinary case: minute bars at a readable zoom
+    // tick several times inside one day, and those are clock times.
+    const bars = makeBars(300, 60_000);
+    const scale = makeTimeScale(bars.length - 1, 8, plot);
+    const range = scale.visibleRange(bars.length);
+    const ticks = timeTicks(bars, range, scale, 60_000, 60).ticks;
+    expect(ticks.some((tick) => tick.label.includes(':'))).toBe(true);
+  });
+
   it('keeps labels at least the minimum spacing apart', () => {
     for (const spacing of [0.5, 1, 3, 8, 30, 120]) {
       const bars = makeBars(4_000, 60_000);

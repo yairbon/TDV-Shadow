@@ -6,7 +6,7 @@
  * search merges across providers without duplicating an instrument.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createMarketData } from '../../../src/providers/registry.js';
 import { fail, ok, type MarketDataProvider } from '../../../src/providers/types.js';
 import { makeBar, type Bar, type Timeframe } from '../../../src/data/types.js';
@@ -269,6 +269,31 @@ describe('searching across providers', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toContain('credits');
+  });
+
+  it('does not let one unreachable provider stall the whole search', async () => {
+    // `Promise.all` waits for the slowest, so a provider blocked by a firewall or an
+    // extension held the dialog on "searching…" indefinitely while hits that had already
+    // arrived sat unrendered.
+    vi.useFakeTimers();
+    try {
+      const answering = stub('twelve-data', ['1m'], { hits: [{ symbol: 'TSM', exchange: 'NYSE' }] });
+      const silent: MarketDataProvider = {
+        ...stub('alpha-vantage', ['1d']).provider,
+        searchSymbols: () => new Promise(() => {}),
+      };
+      const market = createMarketData({
+        ...noPersist,
+        only: [silent, answering.provider],
+      });
+      const pending = market.search('semi');
+      await vi.advanceTimersByTimeAsync(5000);
+      const result = await pending;
+      if (!result.ok) throw new Error(result.reason);
+      expect(result.value.map((hit) => hit.symbol)).toContain('TSM');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not call out for an empty query', async () => {

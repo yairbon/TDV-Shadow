@@ -16,7 +16,7 @@ import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { createMarketData } from './providers/registry.js';
 import type { ProviderId, SymbolHit } from './providers/types.js';
 import { applyQuote } from './providers/quoteBar.js';
-import { detectConnector } from './providers/artifactRuntime.js';
+import { detectConnector, type ConnectorDetection } from './providers/artifactRuntime.js';
 import { createBundledProvider } from './providers/bundled.js';
 import { installControlApi } from './app/control.js';
 import {
@@ -217,6 +217,7 @@ const market = createMarketData({
 async function adoptConnectorProvider(): Promise<void> {
   const found = await detectConnector();
   connectorDetail = found.detail;
+  connectorState = found.state;
   if (found.provider === null) return;
   market.replaceChain([found.provider, createBundledProvider()]);
   syncTimeframes();
@@ -232,6 +233,7 @@ async function adoptConnectorProvider(): Promise<void> {
  * once the reader has noticed the chart is not doing what they expected.
  */
 let connectorDetail = 'still looking for a claude.ai runtime…';
+let connectorState: ConnectorDetection['state'] = 'absent';
 let lastProviderIssue = '';
 
 /** Records a provider refusal for the data panel. `what` names the request. */
@@ -271,8 +273,11 @@ function renderDataStatus(): void {
     `<h3>On screen</h3><p>${escapeHtml(symbol)} · ${escapeHtml(tf)} · ${escapeHtml(
       dataSource(),
     )}</p>` +
+    // Only `refused` is coloured as a fault. Having no runtime is the ordinary case
+    // everywhere but a published page, and flagging it red teaches the reader to skip the
+    // one line that matters when something has genuinely gone wrong.
     `<h3>claude.ai connector</h3><p class="${
-      connectorDetail === 'connector ready' ? '' : 'bad'
+      connectorState === 'refused' ? 'bad' : ''
     }">${escapeHtml(connectorDetail)}</p>` +
     `<h3>Providers, in order</h3>${rows}` +
     `<h3>Last refusal</h3><p class="${lastProviderIssue === '' ? '' : 'bad'}">${escapeHtml(

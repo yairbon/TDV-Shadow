@@ -76,6 +76,13 @@ const sleep = (ms: number): Promise<void> =>
 export interface ConnectorDetection {
   readonly provider: MarketDataProvider | null;
   readonly detail: string;
+  /**
+   * Whether the outcome is worth flagging.
+   *
+   * `absent` is the ordinary case everywhere except a published page, so presenting it as a
+   * fault trains the reader to ignore the one line that matters when something IS wrong.
+   */
+  readonly state: 'ready' | 'absent' | 'refused';
 }
 
 /**
@@ -105,19 +112,39 @@ export async function detectConnector(
     host = runtime();
   }
   if (host === null) {
-    return { provider: null, detail: 'no claude.ai runtime on this page (not published)' };
+    return {
+      provider: null,
+      state: 'absent',
+      detail: 'no claude.ai runtime on this page — normal outside a published artifact',
+    };
   }
   try {
     const namespace = await host.use('mcp');
     if (namespace === null) {
-      return { provider: null, detail: 'runtime found, but it did not grant the mcp capability' };
+      return {
+        provider: null,
+        state: 'refused',
+        detail: 'runtime found, but it did not grant the mcp capability',
+      };
     }
     if (!isCaller(namespace)) {
-      return { provider: null, detail: 'the mcp capability cannot make tool calls in this view' };
+      return {
+        provider: null,
+        state: 'refused',
+        detail: 'the mcp capability cannot make tool calls in this view',
+      };
     }
-    return { provider: createAlphaVantageMcpProvider(namespace), detail: 'connector ready' };
+    return {
+      provider: createAlphaVantageMcpProvider(namespace),
+      state: 'ready',
+      detail: 'connector ready',
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'unknown failure';
-    return { provider: null, detail: `the mcp capability failed to load (${message})` };
+    return {
+      provider: null,
+      state: 'refused',
+      detail: `the mcp capability failed to load (${message})`,
+    };
   }
 }

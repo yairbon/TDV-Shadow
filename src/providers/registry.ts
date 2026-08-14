@@ -117,6 +117,38 @@ export interface MarketDataOptions {
 /** How many bars to ask for when the caller does not say. */
 const DEFAULT_LIMIT = 500;
 
+/**
+ * How long one provider may hold up a merged search.
+ *
+ * `Promise.all` waits for the slowest, so a single provider that never answers — blocked
+ * by a firewall or an extension, or simply unreachable — stalls the dialog indefinitely
+ * while the results that did arrive sit unrendered. Long enough that a slow answer still
+ * counts, short enough that the reader is not left watching "searching…".
+ */
+const SEARCH_TIMEOUT_MS = 3000;
+
+/** Resolves to `promise`, or to a failure once `SEARCH_TIMEOUT_MS` has passed. */
+function withTimeout<T>(
+  promise: Promise<ProviderResult<T>>,
+  label: string,
+): Promise<ProviderResult<T>> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(fail('network', `${label} did not answer in time`));
+    }, SEARCH_TIMEOUT_MS);
+    const settle = (result: ProviderResult<T>): void => {
+      clearTimeout(timer);
+      resolve(result);
+    };
+    promise.then(settle, (error: unknown) => {
+      // A provider is not supposed to reject, but one that does must not take the merge
+      // down with it — the other providers' hits are still worth showing.
+      const detail = error instanceof Error ? error.message : 'failed';
+      settle(fail('network', `${label}: ${detail}`));
+    });
+  });
+}
+
 export function createMarketData(options: MarketDataOptions = {}): MarketData {
   const store = options.persist === false ? undefined : browserCacheStore();
   const wrap = (provider: MarketDataProvider): MarketDataProvider =>
@@ -304,7 +336,11 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
         const capability = provider.capabilities();
         return capability.ready && capability.canSearch;
       });
-      const results = await Promise.all(searchable.map((provider) => provider.searchSymbols(trimmed)));
+      const results = await Promise.all(
+        searchable.map((provider) =>
+          withTimeout(provider.searchSymbols(trimmed), provider.capabilities().label),
+        ),
+      );
 
       const merged: SymbolHit[] = [];
       const seen = new Set<string>();
