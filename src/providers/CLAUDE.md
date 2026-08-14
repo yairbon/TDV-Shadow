@@ -17,6 +17,14 @@ allowed in.
 - A provider declares what it can actually serve (`capabilities()`), and the UI is built
   from that declaration rather than from a hardcoded list. An endpoint that is premium on
   the caller's key is *not available*, and saying so is the provider's job.
+- The chain is a chain. A request tries every provider that could serve it, in order, and
+  only fails when all of them have. `series` named one provider and gave up on its failure,
+  so a momentarily unreachable connector did not fall through to the CSVs sitting behind it
+  in the same chain — the chart refused to load a symbol it already had the data for.
+- When every provider refuses, the reported reason is the FIRST one's. The list is ordered
+  best-resolution-first, so the head is the provider that should have answered; the tail is
+  usually the bundled CSV pointing out that a ticker it never shipped with is not in the
+  build, which is true and useless.
 - A provider that reports `ready: false` is not called. It has already said it will refuse
   everything, so calling it spends budget for nothing and — worse — its refusal becomes the
   reason the chain reports when a request fails, drowning out the provider that actually

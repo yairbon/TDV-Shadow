@@ -646,6 +646,63 @@
       }
 
       /* ---------- symbol search ---------- */
+      /* The data panel exists to be READ when something is wrong, so it is plain text at a
+         comfortable size rather than a dense settings grid. */
+      #data-status {
+        width: min(560px, 92vw);
+        padding: 16px 18px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--text);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+        font-size: 13px;
+      }
+      #data-status::backdrop {
+        background: rgba(0, 0, 0, 0.55);
+      }
+      #data-status h2 {
+        margin: 0 0 10px;
+        font-size: 14px;
+      }
+      #data-status h3 {
+        margin: 14px 0 6px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--text-dim);
+      }
+      #data-status p {
+        margin: 4px 0;
+      }
+      #data-status .prov {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 5px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      #data-status .prov span:last-child {
+        color: var(--text-dim);
+        text-align: right;
+      }
+      #data-status .bad {
+        color: var(--down);
+      }
+      #data-status form {
+        margin-top: 14px;
+      }
+      /* The legend's source label opens the panel, so it has to look pressable — and be
+         pressable: `#legend` is `pointer-events: none` so the crosshair keeps working
+         under it, which silently swallows every click on a child that does not opt back
+         in. The indicator rows already do this; without it the label looked interactive
+         and did nothing at all. */
+      #legend .src-open {
+        pointer-events: auto;
+        cursor: pointer;
+        text-decoration: underline dotted;
+        text-underline-offset: 2px;
+      }
       #search {
         width: min(520px, 92vw);
         padding: 0;
@@ -1203,6 +1260,11 @@
       </div>
     </div>
     <div id="toolbar-overflow" hidden role="group" aria-label="More controls"></div>
+    <dialog id="data-status">
+      <h2>Data</h2>
+      <div id="data-status-body"></div>
+      <form method="dialog"><button class="tb" type="submit">Close</button></form>
+    </dialog>
     <dialog id="search">
       <div class="search-head">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>

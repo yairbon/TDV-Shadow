@@ -29,6 +29,7 @@ import {
   ok,
   type MarketDataProvider,
   type ProviderCapabilities,
+  type ProviderId,
   type ProviderResult,
   type Quote,
   type SymbolHit,
@@ -40,6 +41,15 @@ export interface LoadedSeries {
   readonly timeframe: Timeframe;
   /** Which provider answered, for the status line. */
   readonly provider: string;
+  /**
+   * The same provider's id.
+   *
+   * Carried alongside the label because the caller has to make a DECISION on it, not just
+   * print it: bars that came from the bundled CSV cannot be polled for a quote and must
+   * not be offered as live, and matching on a display string to work that out is the kind
+   * of test that breaks the day someone rewords a label.
+   */
+  readonly providerId: ProviderId;
   readonly origin: Resolution['origin'];
   /**
    * The timeframe actually fetched. Equal to `timeframe` unless it was rolled up, and
@@ -127,9 +137,13 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
    * inserted last, which is a different provider from the one whose capabilities were
    * consulted.
    */
-  const pick = (
-    timeframe: Timeframe,
-  ): { provider: MarketDataProvider; capability: ProviderCapabilities; resolution: Resolution } | null => {
+  interface Candidate {
+    readonly provider: MarketDataProvider;
+    readonly capability: ProviderCapabilities;
+    readonly resolution: Resolution;
+  }
+
+  const pick = (timeframe: Timeframe): Candidate | null => {
     const caps = capabilities();
     const chosen = resolveAcross(caps, timeframe);
     if (chosen === null) return null;
@@ -137,6 +151,33 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
     const provider = chain.at(index);
     if (provider === undefined) return null;
     return { provider, capability: chosen.provider, resolution: chosen.resolution };
+  };
+
+  /**
+   * EVERY provider that could serve `timeframe`, best resolution first.
+   *
+   * `pick` alone made the chain a chain in name only: it named one provider, and a failure
+   * there ended the request. So a connector that was momentarily unreachable did not fall
+   * through to the CSVs sitting behind it in the same chain — the chart simply refused to
+   * load a symbol it had the data for. `quote()` already looped; this is the same rule.
+   *
+   * Order is by resolution quality first — a native answer anywhere beats a resampled one,
+   * as `resolveAcross` decides — and by chain position within that.
+   */
+  const candidates = (timeframe: Timeframe): Candidate[] => {
+    const caps = capabilities();
+    const best = pick(timeframe);
+    const out: Candidate[] = best === null ? [] : [best];
+    for (const [index, capability] of caps.entries()) {
+      if (best !== null && capability === best.capability) continue;
+      if (!capability.ready) continue;
+      const resolution = resolveTimeframe(capability, timeframe);
+      if (resolution.origin === 'unavailable') continue;
+      const provider = chain.at(index);
+      if (provider === undefined) continue;
+      out.push({ provider, capability, resolution });
+    }
+    return out;
   };
 
   return {
@@ -181,37 +222,54 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
     },
 
     async series(symbol, timeframe, limit = DEFAULT_LIMIT) {
-      const chosen = pick(timeframe);
-      if (chosen === null) {
+      const options = candidates(timeframe);
+      if (options.length === 0) {
         return fail('entitlement', `no configured provider serves ${timeframe}`);
       }
-      const { provider, resolution } = chosen;
-      // A resampled target needs proportionally more source bars, or the roll-up produces
-      // a handful of buckets from a full request.
-      const factor =
-        resolution.origin === 'resampled'
-          ? Math.max(1, Math.round(TIMEFRAME_MS[timeframe] / TIMEFRAME_MS[resolution.fetchAs]))
-          : 1;
-      const page = await provider.fetchSeries(symbol, resolution.fetchAs, limit * factor);
-      if (!page.ok) return page;
 
-      const bars =
-        resolution.origin === 'resampled'
-          ? resample(page.value.bars, resolution.fetchAs, timeframe)
-          : page.value.bars;
-      if (bars.length === 0) return fail('not-found', `no ${timeframe} bars for ${symbol}`);
+      // The FIRST failure, not the last: `candidates` is ordered best-resolution-first, so
+      // the head of the list is the provider that should have answered and its refusal is
+      // the informative one. The tail is typically the bundled CSV replying that a ticker
+      // it never shipped with is not in the build — true, and useless.
+      let firstFailure: ProviderResult<never> | null = null;
+      for (const { provider, capability, resolution } of options) {
+        // A resampled target needs proportionally more source bars, or the roll-up
+        // produces a handful of buckets from a full request.
+        const factor =
+          resolution.origin === 'resampled'
+            ? Math.max(1, Math.round(TIMEFRAME_MS[timeframe] / TIMEFRAME_MS[resolution.fetchAs]))
+            : 1;
+        const page = await provider.fetchSeries(symbol, resolution.fetchAs, limit * factor);
+        if (!page.ok) {
+          firstFailure ??= page;
+          continue;
+        }
 
-      return ok({
-        bars,
-        timeframe,
-        provider: chosen.capability.label,
-        origin: resolution.origin,
-        sourceTimeframe: resolution.fetchAs,
-        // `withCache` reports staleness on its own richer method; through the plain
-        // interface a served-from-stale result is indistinguishable, so this is only
-        // true when the provider itself said so.
-        stale: false,
-      });
+        const bars =
+          resolution.origin === 'resampled'
+            ? resample(page.value.bars, resolution.fetchAs, timeframe)
+            : page.value.bars;
+        if (bars.length === 0) {
+          firstFailure ??= fail('not-found', `no ${timeframe} bars for ${symbol}`);
+          continue;
+        }
+
+        return ok({
+          bars,
+          timeframe,
+          provider: capability.label,
+          providerId: capability.id,
+          origin: resolution.origin,
+          sourceTimeframe: resolution.fetchAs,
+          // `withCache` reports staleness on its own richer method; through the plain
+          // interface a served-from-stale result is indistinguishable, so this is only
+          // true when the provider itself said so.
+          stale: false,
+        });
+      }
+
+      // Every provider that could have served it was asked, and none did.
+      return firstFailure ?? fail('not-found', `no ${timeframe} bars for ${symbol}`);
     },
 
     async search(query) {

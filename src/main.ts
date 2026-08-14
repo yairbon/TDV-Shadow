@@ -14,9 +14,9 @@ import { createChart, type Chart, type RendererMode } from './app/bootstrap.js';
 import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { createMarketData } from './providers/registry.js';
-import type { SymbolHit } from './providers/types.js';
+import type { ProviderId, SymbolHit } from './providers/types.js';
 import { applyQuote } from './providers/quoteBar.js';
-import { detectConnectorProvider } from './providers/artifactRuntime.js';
+import { detectConnector } from './providers/artifactRuntime.js';
 import { createBundledProvider } from './providers/bundled.js';
 import { installControlApi } from './app/control.js';
 import {
@@ -210,16 +210,91 @@ const market = createMarketData({
  * was built to remove.
  */
 async function adoptConnectorProvider(): Promise<void> {
-  const connector = await detectConnectorProvider();
-  if (connector === null) return;
-  market.replaceChain([connector, createBundledProvider()]);
+  const found = await detectConnector();
+  connectorDetail = found.detail;
+  if (found.provider === null) return;
+  market.replaceChain([found.provider, createBundledProvider()]);
   syncTimeframes();
-  const capability = connector.capabilities();
-  setStatus(`live data via ${capability.label} · daily`, 5000);
+  renderLegend(null);
+  setStatus(`live data via ${found.provider.capabilities().label} · daily`, 5000);
 }
+
+/**
+ * What the runtime detection concluded, and the last thing a provider refused to do.
+ *
+ * Both are held for the data panel. The status line already carries a failure the moment it
+ * happens, but it is transient by design — and "what went wrong" is asked minutes later,
+ * once the reader has noticed the chart is not doing what they expected.
+ */
+let connectorDetail = 'still looking for a claude.ai runtime…';
+let lastProviderIssue = '';
+
+/** Records a provider refusal for the data panel. `what` names the request. */
+function noteProviderIssue(what: string, reason: string): void {
+  lastProviderIssue = `${what}: ${reason}`;
+}
+
+/**
+ * Everything about where the data is coming from, in one readable panel.
+ *
+ * Built because diagnosing a published page from outside it turned out to be impossible:
+ * whether the runtime was found, whether the capability was granted, which providers are in
+ * the chain and what each one will actually serve are all invisible, and every one of them
+ * changes what "the symbol will not load" means. Reading four lines beats guessing.
+ */
+function renderDataStatus(): void {
+  const body = el('#data-status-body');
+  if (body === null) return;
+  const rows = market
+    .providers()
+    .map((capability) => {
+      const serves =
+        capability.nativeTimeframes.length === 0
+          ? 'nothing'
+          : [...capability.nativeTimeframes].join(', ');
+      const detail = capability.ready
+        ? `${serves}${capability.canQuote ? ' · quotes' : ''}`
+        : 'no credential — not used';
+      return (
+        `<div class="prov"><span>${escapeHtml(capability.label)}</span>` +
+        `<span class="${capability.ready ? '' : 'bad'}">${escapeHtml(detail)}</span></div>`
+      );
+    })
+    .join('');
+
+  body.innerHTML =
+    `<h3>On screen</h3><p>${escapeHtml(symbol)} · ${escapeHtml(tf)} · ${escapeHtml(
+      dataSource(),
+    )}</p>` +
+    `<h3>claude.ai connector</h3><p class="${
+      connectorDetail === 'connector ready' ? '' : 'bad'
+    }">${escapeHtml(connectorDetail)}</p>` +
+    `<h3>Providers, in order</h3>${rows}` +
+    `<h3>Last refusal</h3><p class="${lastProviderIssue === '' ? '' : 'bad'}">${escapeHtml(
+      lastProviderIssue === '' ? 'none this session' : lastProviderIssue,
+    )}</p>`;
+}
+
+function openDataStatus(): void {
+  const dialog = document.querySelector('#data-status');
+  if (!(dialog instanceof HTMLDialogElement)) return;
+  renderDataStatus();
+  dialog.showModal();
+}
+
 
 /** Where a pane's bars came from. See `Loaded.origin`. */
 type DataOrigin = 'generated' | 'bundled' | 'provider';
+
+/**
+ * Which of those a chain answer counts as.
+ *
+ * The bundled provider is the last link in the chain, so a request that no live provider
+ * could serve still comes back `ok` — with bars out of a file. Treating that as `provider`
+ * would offer the Live toggle for data that cannot move.
+ */
+const originOf = (providerId: ProviderId): DataOrigin =>
+  providerId === 'bundled' ? 'bundled' : 'provider';
 
 interface Loaded {
   readonly bars: Bar[];
@@ -847,7 +922,9 @@ function renderLegend(index: number | null): void {
   legend.innerHTML =
     `<div class="title">${symbol} <span class="muted">· ${tf} · ${
       chart.chartType().replace(/-/g, ' ')
-    } · ${dataSource()}</span></div>` +
+    } · <span class="src-open" role="button" tabindex="0" title="Where this data comes from">${
+      dataSource()
+    }</span></span></div>` +
     `<div class="ohlc">${cell('O', bar.o)} ${cell('H', bar.h)} ${cell('L', bar.l)} ${cell('C', bar.c)} ` +
     `<b class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${change.toFixed(2)} (${
       percent >= 0 ? '+' : ''
@@ -881,6 +958,22 @@ legend?.addEventListener('click', (event) => {
 
 // Double-clicking the row is the TradingView gesture; the gear is the discoverable one,
 // and the only one that works on a touch screen.
+// The legend's source label is the handle, because that label is what prompts the question
+// in the first place — the reader is already looking at "bundled data" and wondering why.
+legend?.addEventListener('click', (event) => {
+  const target = event.target;
+  if (target instanceof HTMLElement && target.classList.contains('src-open')) openDataStatus();
+});
+
+// It carries `role="button"`, so it has to answer the keys a button answers.
+legend?.addEventListener('keydown', (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || !target.classList.contains('src-open')) return;
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  event.preventDefault();
+  openDataStatus();
+});
+
 legend?.addEventListener('dblclick', (event) => {
   const target = event.target;
   const handle = target instanceof HTMLElement ? target.closest('[data-handle]') : null;
@@ -1054,7 +1147,12 @@ const symbolInput = inp('#symbol-input');
 async function loadTicker(ticker: string): Promise<void> {
   const name = ticker.trim().toUpperCase();
   if (name === '') return;
-  if (findSymbol(name) !== null) {
+  // A generated series has no provider to ask; everything else goes through the chain,
+  // INCLUDING the tickers that ship as CSVs. Short-circuiting those to the baked-in file
+  // meant AAPL and TSLA loaded months-old bars that look exactly like fresh ones — and the
+  // chain already ends in the bundled provider, so the file is still what answers when
+  // nothing live can.
+  if (findSymbol(name)?.source === 'synthetic') {
     switchSymbol(name);
     return;
   }
@@ -1065,6 +1163,7 @@ async function loadTicker(ticker: string): Promise<void> {
   if (!result.ok) {
     // Keep the current chart: blanking it, or relabelling the old bars, is worse than
     // saying plainly that the load failed.
+    noteProviderIssue(`loading ${name}`, result.reason);
     setStatus(`${name}: ${result.reason}`);
     return;
   }
@@ -1072,12 +1171,17 @@ async function loadTicker(ticker: string): Promise<void> {
   symbol = name;
   bars = [...result.value.bars];
   tf = '1d';
-  loaded = { bars, timeframe: tf, origin: 'provider', base: null };
+  // The chain's last link is the CSV, so a load that fell through to it must NOT be
+  // dressed up as live: the Live toggle reads this, and offering to poll a file is the
+  // lie this field exists to prevent.
+  loaded = { bars, timeframe: tf, origin: originOf(result.value.providerId), base: null };
   setLive(false);
   build();
   installControl();
-  const heading = el('#symbol-name');
-  if (heading !== null) heading.textContent = symbol;
+  // `syncSymbolChrome`, not just the heading: the Live toggle's enabled state is decided
+  // by where these bars came from, and setting the name by hand skipped it — so a symbol
+  // that fell through to the CSV kept whatever state the previous symbol had left behind.
+  syncSymbolChrome();
   syncTimeframes();
   renderLegend(null);
   setStatus(
@@ -1205,12 +1309,13 @@ async function fetchTimeframe(forSymbol: string, wanted: Timeframe): Promise<voi
   // symbol's bars under another's name.
   if (forSymbol !== symbol) return;
   if (!result.ok) {
+    noteProviderIssue(`${forSymbol} ${wanted}`, result.reason);
     setStatus(`${forSymbol} ${wanted}: ${result.reason}`);
     return;
   }
   bars = [...result.value.bars];
   tf = wanted;
-  loaded = { bars, timeframe: wanted, origin: 'provider', base: null };
+  loaded = { bars, timeframe: wanted, origin: originOf(result.value.providerId), base: null };
   setLive(false);
   build();
   installControl();
@@ -1369,6 +1474,7 @@ async function pollQuote(): Promise<void> {
     const result = await market.quote(forSymbol);
     if (forSymbol !== symbol || forTimeframe !== tf || quoteTimer === null) return;
     if (!result.ok) {
+      noteProviderIssue(`quote for ${forSymbol}`, result.reason);
       setLiveState('stale', `${forSymbol}: ${result.reason}`);
       // No key and no entitlement do not improve by asking again every 25 seconds; a
       // rate limit or a dropped connection might, so those keep polling.
@@ -1419,6 +1525,7 @@ async function rollForward(forSymbol: string, forTimeframe: Timeframe): Promise<
   const target = currentChart();
   if (target === null) return;
   if (!result.ok) {
+    noteProviderIssue(`bars for ${forSymbol}`, result.reason);
     setLiveState('stale', `${forSymbol}: ${result.reason}`);
     nextRollAt = Date.now() + ROLL_RETRY_MS;
     return;
@@ -2151,6 +2258,7 @@ function scheduleRemoteSearch(query: string): void {
         // call for completely different actions from the reader.
         remoteHits = [];
         remoteNote = result.reason;
+        noteProviderIssue(`search for ${q}`, result.reason);
       }
       // Only if the dialog is still showing this query — the user may have typed on, or
       // closed the dialog entirely, while the request was out.

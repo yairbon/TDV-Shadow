@@ -338,6 +338,40 @@ All three now derive from the registry, and a test walks it rather than naming i
   Vantage gates intraday behind a premium key. 1m/5m/1h are real only when the app is run
   locally against a Twelve Data key.
 
+- **Diagnosing the published page.** Two rounds of "it does not load and I see no intraday"
+  could not be answered from outside the artifact, because nothing about the data path was
+  visible: whether a runtime was found, whether the capability was granted, which providers
+  were in the chain, what each would serve. Guessing produced two wrong theories before a
+  stubbed-runtime test suite produced five right ones.
+
+  The app now says so itself. The legend names the source — `demo data`, `bundled data`, or
+  the provider's label — and clicking it opens a panel with the detection result, the chain,
+  and the last refusal verbatim. The status line already carried failures, but it is
+  transient by design and the question gets asked minutes later.
+
+  What the tests turned up once the path could be driven at all:
+
+  - **Detection looked exactly once**, at module-eval time. The app's script is a deferred
+    module so the host normally wins that race, but losing it is not a graceful
+    degradation: the REST providers stay in a chain that cannot reach anything.
+  - **`series` was not a chain.** It resolved one provider and a failure there ended the
+    request — no fallthrough to the bundled CSVs behind it. `quote` had looped since it was
+    written; `series` never did.
+  - **`loadTicker` short-circuited every bundled ticker to its CSV**, so AAPL and TSLA
+    loaded months-old bars that look exactly like fresh ones. Every non-generated symbol
+    goes through the chain now, and the CSV answers only when nothing live can — at which
+    point it is marked `bundled`, so the Live toggle does not offer to poll a file.
+  - **`loadTicker` set the symbol heading by hand** instead of calling `syncSymbolChrome`,
+    so the Live toggle kept whatever enabled state the previous symbol had left behind.
+  - **The legend's new source label was not clickable.** `#legend` is `pointer-events: none`
+    so the crosshair works under it, which silently swallows clicks on any child that does
+    not opt back in. It looked interactive and did nothing.
+
+  And one thing that is not a bug and cannot be fixed in this repo: **Alpha Vantage's free
+  tier gates intraday**, verified by calling `TIME_SERIES_INTRADAY` through the connector
+  and reading back "This is a premium endpoint". The artifact gets daily. 1m/5m/1h need
+  either a premium key or the app run locally against Twelve Data.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

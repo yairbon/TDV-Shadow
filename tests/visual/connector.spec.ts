@@ -240,3 +240,91 @@ test.describe('a runtime that arrives late', () => {
     expect((await state(page)).symbol).toBe('ASML');
   });
 });
+
+test.describe('the data panel', () => {
+  const openPanel = async (page: Page): Promise<string> => {
+    await page.click('#legend .src-open');
+    await page.waitForSelector('#data-status[open]');
+    return (await page.textContent('#data-status-body')) ?? '';
+  };
+
+  test('reports that the connector is ready when it is', async ({ page }) => {
+    await installRuntime(page);
+    await open(page);
+    await load(page, 'ASML');
+    expect(await openPanel(page)).toContain('connector ready');
+  });
+
+  test('says the runtime was never there, rather than going quiet', async ({ page }) => {
+    // Told apart from "granted but refused", because the two have different fixes and
+    // from outside the page they look identical. Detection spends its whole wait first,
+    // since with no runtime there is nothing to cut it short.
+    await open(page);
+    await page.waitForTimeout(4500);
+    expect(await openPanel(page)).toContain('not published');
+  });
+
+  test('says when the runtime is present but the capability was not granted', async ({ page }) => {
+    await installRuntime(page, { ungranted: true });
+    await open(page);
+    expect(await openPanel(page)).toContain('did not grant');
+  });
+
+  test('lists the chain and what each provider will actually serve', async ({ page }) => {
+    await installRuntime(page);
+    await open(page);
+    const text = await openPanel(page);
+    expect(text).toContain('Alpha Vantage (connector)');
+    expect(text).toContain('Bundled data');
+    expect(text).toContain('1d');
+  });
+
+  test('keeps the last refusal, after the status line has moved on', async ({ page }) => {
+    // The question is asked minutes later, once the reader has noticed something is wrong.
+    await installRuntime(page, { rejectWith: 'server_not_connected' });
+    await open(page);
+    await load(page, 'ASML');
+    await page.waitForTimeout(7000);
+    const text = await openPanel(page);
+    expect(text).toContain('ASML');
+    expect(text.toLowerCase()).toContain('connector');
+  });
+
+  test('reports no refusal when nothing has failed', async ({ page }) => {
+    await installRuntime(page);
+    await open(page);
+    await load(page, 'ASML');
+    expect(await openPanel(page)).toContain('none this session');
+  });
+});
+
+test.describe('a bundled ticker with a provider available', () => {
+  test('takes the provider’s bars, not the CSV baked into the build', async ({ page }) => {
+    // The CSV is months old and looks exactly like fresh data on a chart, so a symbol
+    // that shipped with the build used to load stale prices with nothing to show for it.
+    await installRuntime(page);
+    await open(page);
+    await load(page, 'AAPL');
+
+    const calls = await page.evaluate(
+      () =>
+        (window as unknown as { __connectorCalls: { tool: string; input: unknown }[] })
+          .__connectorCalls,
+    );
+    expect(calls.some((call) => call.tool === 'TIME_SERIES_DAILY')).toBe(true);
+    expect(await page.textContent('#legend')).toContain('connector');
+  });
+
+  test('falls back to the CSV when no provider can answer, and says so', async ({ page }) => {
+    // The chain's last link. Marked as bundled rather than live, so the Live toggle does
+    // not offer to poll a file.
+    await installRuntime(page, { rejectWith: 'server_not_connected' });
+    await open(page);
+    await load(page, 'AAPL');
+    expect(await page.textContent('#legend')).toContain('bundled data');
+    const disabled = await page.evaluate(
+      () => document.querySelector<HTMLButtonElement>('#live-toggle')?.disabled ?? false,
+    );
+    expect(disabled).toBe(true);
+  });
+});

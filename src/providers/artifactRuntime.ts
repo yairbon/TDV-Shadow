@@ -66,6 +66,19 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 /**
+ * What detection found, in words.
+ *
+ * The negative cases are deliberately indistinguishable to the app — all of them mean
+ * "carry on with the chain you have". They are NOT indistinguishable to a person trying to
+ * work out why a published page has no data, and until this was recorded the only way to
+ * tell "no runtime" from "capability refused" was to guess.
+ */
+export interface ConnectorDetection {
+  readonly provider: MarketDataProvider | null;
+  readonly detail: string;
+}
+
+/**
  * Resolves the connector-backed provider, or `null` when this is not a published page.
  *
  * Never rejects. A runtime that throws on `use` is the same outcome as one that is not
@@ -77,6 +90,13 @@ const sleep = (ms: number): Promise<void> =>
 export async function detectConnectorProvider(
   options: { readonly waitMs?: number; readonly now?: () => number } = {},
 ): Promise<MarketDataProvider | null> {
+  return (await detectConnector(options)).provider;
+}
+
+/** As `detectConnectorProvider`, but says what happened. */
+export async function detectConnector(
+  options: { readonly waitMs?: number; readonly now?: () => number } = {},
+): Promise<ConnectorDetection> {
   const now = options.now ?? (() => Date.now());
   const deadline = now() + (options.waitMs ?? RUNTIME_WAIT_MS);
   let host = runtime();
@@ -84,11 +104,20 @@ export async function detectConnectorProvider(
     await sleep(RUNTIME_POLL_MS);
     host = runtime();
   }
-  if (host === null) return null;
+  if (host === null) {
+    return { provider: null, detail: 'no claude.ai runtime on this page (not published)' };
+  }
   try {
     const namespace = await host.use('mcp');
-    return isCaller(namespace) ? createAlphaVantageMcpProvider(namespace) : null;
-  } catch {
-    return null;
+    if (namespace === null) {
+      return { provider: null, detail: 'runtime found, but it did not grant the mcp capability' };
+    }
+    if (!isCaller(namespace)) {
+      return { provider: null, detail: 'the mcp capability cannot make tool calls in this view' };
+    }
+    return { provider: createAlphaVantageMcpProvider(namespace), detail: 'connector ready' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'unknown failure';
+    return { provider: null, detail: `the mcp capability failed to load (${message})` };
   }
 }

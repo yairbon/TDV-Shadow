@@ -150,6 +150,58 @@ describe('timeframe availability', () => {
   });
 });
 
+describe('falling through the chain', () => {
+  it('asks the next provider when the first one fails', async () => {
+    // The chain was a chain in name only: one provider was named and a failure there
+    // ended the request, so a momentarily unreachable connector did not fall through to
+    // the CSVs sitting behind it — the chart refused to load a symbol it had data for.
+    const broken: MarketDataProvider = {
+      ...stub('alpha-vantage', ['1d']).provider,
+      fetchSeries: () => Promise.resolve(fail('network', 'connector unreachable')),
+    };
+    const backup = stub('bundled', ['1d']);
+    const market = createMarketData({ ...noPersist, only: [broken, backup.provider] });
+
+    const result = await market.series('AAPL', '1d', 10);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.providerId).toBe('bundled');
+    expect(backup.asked).toHaveLength(1);
+  });
+
+  it('does not ask a later provider once one has answered', async () => {
+    const first = stub('twelve-data', ['1d']);
+    const second = stub('bundled', ['1d']);
+    const market = createMarketData({ ...noPersist, only: [first.provider, second.provider] });
+    await market.series('AAPL', '1d', 10);
+    expect(first.asked).toHaveLength(1);
+    expect(second.asked).toHaveLength(0);
+  });
+
+  it('reports the most specific reason when every provider refuses', async () => {
+    const refuse = (reason: string): MarketDataProvider => ({
+      ...stub('alpha-vantage', ['1d']).provider,
+      fetchSeries: () => Promise.resolve(fail('rate-limit', reason)),
+    });
+    const market = createMarketData({
+      ...noPersist,
+      only: [refuse('first ran out'), refuse('second ran out')],
+    });
+    const result = await market.series('AAPL', '1d', 10);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('ran out');
+  });
+
+  it('skips a provider that cannot serve the timeframe at all', async () => {
+    const dailyOnly = stub('alpha-vantage', ['1d']);
+    const minute = stub('twelve-data', ['1m']);
+    const market = createMarketData({ ...noPersist, only: [dailyOnly.provider, minute.provider] });
+    await market.series('AAPL', '1m', 10);
+    expect(dailyOnly.asked).toHaveLength(0);
+    expect(minute.asked).toHaveLength(1);
+  });
+});
+
 describe('picking the provider', () => {
   it('asks the provider whose capabilities were consulted, not one sharing its id', async () => {
     // An MCP and a REST Alpha Vantage are both `alpha-vantage`. Looking the chosen
