@@ -47,13 +47,43 @@ function isCaller(value: unknown): value is McpCaller {
 }
 
 /**
+ * How long to keep looking for a runtime that has not appeared yet.
+ *
+ * A single look at module-eval time is a bug, not a simplification. The app's script is a
+ * deferred module, so the host normally installs `claude` first — but "normally" is doing
+ * real work in that sentence, and when it loses the race the page does not degrade, it
+ * fails completely: the REST providers stay in the chain, the artifact cannot reach them,
+ * and every timeframe button lights up and fails on press. A few seconds of polling costs
+ * nothing on the far more common path where there is no runtime at all, because nothing is
+ * waiting on the answer.
+ */
+const RUNTIME_WAIT_MS = 4000;
+const RUNTIME_POLL_MS = 100;
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/**
  * Resolves the connector-backed provider, or `null` when this is not a published page.
  *
  * Never rejects. A runtime that throws on `use` is the same outcome as one that is not
  * there, and a boot path that can throw would take the whole chart down with it.
+ *
+ * `now` is injectable so the wait can be driven deterministically in tests rather than by
+ * making them sit through it.
  */
-export async function detectConnectorProvider(): Promise<MarketDataProvider | null> {
-  const host = runtime();
+export async function detectConnectorProvider(
+  options: { readonly waitMs?: number; readonly now?: () => number } = {},
+): Promise<MarketDataProvider | null> {
+  const now = options.now ?? (() => Date.now());
+  const deadline = now() + (options.waitMs ?? RUNTIME_WAIT_MS);
+  let host = runtime();
+  while (host === null && now() < deadline) {
+    await sleep(RUNTIME_POLL_MS);
+    host = runtime();
+  }
   if (host === null) return null;
   try {
     const namespace = await host.use('mcp');

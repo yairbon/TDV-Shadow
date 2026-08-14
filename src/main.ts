@@ -847,7 +847,7 @@ function renderLegend(index: number | null): void {
   legend.innerHTML =
     `<div class="title">${symbol} <span class="muted">· ${tf} · ${
       chart.chartType().replace(/-/g, ' ')
-    }</span></div>` +
+    } · ${dataSource()}</span></div>` +
     `<div class="ohlc">${cell('O', bar.o)} ${cell('H', bar.h)} ${cell('L', bar.l)} ${cell('C', bar.c)} ` +
     `<b class="${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${change.toFixed(2)} (${
       percent >= 0 ? '+' : ''
@@ -1875,6 +1875,29 @@ function status(): void {
       magnet === 'off' ? '' : ' · magnet'
     }${placing}`,
   );
+}
+
+/**
+ * Names where the bars on screen came from. Shown in the legend, beside the timeframe.
+ *
+ * Permanent rather than transient, because it is the first question to ask when the chart
+ * is not doing what was expected — a symbol that will not load and a greyed-out timeframe
+ * have completely different explanations depending on which chain is live, and until this
+ * was on screen there was no way to tell from the outside which one it was.
+ *
+ * In the legend rather than the status line: `#status` is `flex: 0 0 auto` precisely so it
+ * never shrinks, so anything added to it widens the toolbar and evicts a control into the
+ * overflow panel at a width that previously fitted. The legend floats over the plot and
+ * costs the toolbar nothing.
+ *
+ * Derived, never stored: the provider that serves the current timeframe is a fact the
+ * chain already knows, and a copy kept alongside it would be one more thing to go stale.
+ */
+function dataSource(): string {
+  if (loaded.origin === 'generated') return 'demo data';
+  if (loaded.origin === 'bundled') return 'bundled data';
+  const entry = market.timeframes().find((candidate) => candidate.timeframe === tf);
+  return entry?.provider ?? 'live data';
 }
 
 /**

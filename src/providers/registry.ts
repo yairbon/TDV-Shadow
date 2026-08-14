@@ -18,7 +18,7 @@
  */
 
 import { TIMEFRAME_MS, TIMEFRAMES, type Bar, type Timeframe } from '../data/types.js';
-import { resolveAcross, type Resolution } from './resolve.js';
+import { resolveAcross, resolveTimeframe, type Resolution } from './resolve.js';
 import { resample } from '../data/agg/resample.js';
 import { createTwelveDataProvider } from './twelveData.js';
 import { createAlphaVantageProvider } from './alphaVantage.js';
@@ -162,11 +162,15 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
             timeframe,
             origin: 'unavailable',
             fetchAs: timeframe,
+            // `resolveTimeframe`, not `resolveAcross`: the latter answers null for exactly
+            // the case being reported here, so its reason was always discarded and every
+            // disabled button fell through to the generic phrasing. The specific reason —
+            // "intraday is not on the free tier" — is the one thing that tells the reader
+            // whether a different key would fix it.
             reason:
               ready === undefined
                 ? 'no data provider is configured'
-                : resolveAcross([{ ...ready, ready: true }], timeframe)?.resolution.reason ??
-                  `${ready.label} does not serve ${timeframe}`,
+                : resolveTimeframe(ready, timeframe).reason,
             provider: null,
           });
           continue;
