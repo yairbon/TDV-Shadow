@@ -13,7 +13,7 @@
 import { createChart, type Chart, type RendererMode } from './app/bootstrap.js';
 import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
-import { fetchDailySeries } from './app/liveData.js';
+import { createMarketData } from './providers/registry.js';
 import { installControlApi } from './app/control.js';
 import {
   clearWorkspace,
@@ -36,7 +36,13 @@ import { createChartDialog, type ChartSettingsForm } from './ui/chartDialog.js';
 import { DARK_THEME, LIGHT_THEME } from './renderer/theme.js';
 import { resample } from './data/agg/resample.js';
 import { MIN_BAR_SPACING } from './renderer/scale/timeScale.js';
-import { TIMEFRAME_MS, type Bar, type PriceScaleMode, type Timeframe } from './data/types.js';
+import {
+  TIMEFRAME_MS,
+  TIMEFRAMES as DATA_TIMEFRAMES,
+  type Bar,
+  type PriceScaleMode,
+  type Timeframe,
+} from './data/types.js';
 import type { ChartType } from './charts/types.js';
 import { computeIndicator, INDICATOR_IDS } from './indicators/registry.js';
 import type { IndicatorId, IndicatorParams } from './indicators/types.js';
@@ -174,6 +180,21 @@ function hostOf(event: { readonly target: EventTarget | null }): HTMLElement {
 }
 
 const seed = num('seed', 7);
+
+/**
+ * The live data chain.
+ *
+ * `?apikey=` is Twelve Data's, which serves 1m/5m/1h/1d; `?avkey=` is Alpha Vantage's,
+ * which serves daily. Both are optional — the chain ends in the bundled CSVs, so the app
+ * charts something with no key and no network at all.
+ *
+ * Keys come from the URL and are never persisted. A credential in localStorage outlives
+ * the intent to use it.
+ */
+const market = createMarketData({
+  ...(params.get('apikey') === null ? {} : { twelveDataKey: params.get('apikey') ?? '' }),
+  ...(params.get('avkey') === null ? {} : { alphaVantageKey: params.get('avkey') ?? '' }),
+});
 
 interface Loaded {
   readonly bars: Bar[];
@@ -977,24 +998,31 @@ async function loadTicker(ticker: string): Promise<void> {
     return;
   }
   setStatus(`loading ${name}…`);
-  const result = await fetchDailySeries(name, params.get('apikey') ?? '');
+  // Daily first: it is the timeframe every provider in the chain can serve, so a symbol
+  // loads even on a key with no intraday entitlement.
+  const result = await market.series(name, '1d');
   if (!result.ok) {
     // Keep the current chart: blanking it, or relabelling the old bars, is worse than
     // saying plainly that the load failed.
     setStatus(`${name}: ${result.reason}`);
     return;
   }
+  rememberSymbol(name);
   symbol = name;
-  bars = [...result.bars];
+  bars = [...result.value.bars];
   tf = '1d';
   loaded = { bars, timeframe: tf, live: false, base: null };
   setLive(false);
   build();
+  installControl();
   const heading = el('#symbol-name');
   if (heading !== null) heading.textContent = symbol;
   syncTimeframes();
   renderLegend(null);
-  status();
+  setStatus(
+    `${name} · ${String(result.value.bars.length)} daily bars · ${result.value.provider}`,
+    4000,
+  );
 }
 
 el('#symbol-load')?.addEventListener('click', () => {
@@ -1034,31 +1062,105 @@ if (timeframeHost !== null) {
   }
 }
 
+/**
+ * Which timeframes this symbol can actually be shown at, and why not when it cannot.
+ *
+ * A synthetic series carries its own 1-minute base and is resampled locally with no
+ * network, so it answers for itself. Everything else asks the provider chain, which knows
+ * what its keys entitle it to — that is what stops the app offering four intraday buttons
+ * against a daily-only key and failing on every press.
+ */
+function timeframeAvailability(): Map<Timeframe, { available: boolean; reason: string }> {
+  const out = new Map<Timeframe, { available: boolean; reason: string }>();
+  if (loaded.base !== null) {
+    // Locally resampled from a 1m base. Daily is excluded for the same reason the
+    // provider layer excludes it: UTC day buckets do not line up with a trading session.
+    for (const value of DATA_TIMEFRAMES) {
+      out.set(value, {
+        available: value !== '1d',
+        reason: value === '1d' ? 'a day cannot be rolled up from generated minutes' : '',
+      });
+    }
+    return out;
+  }
+  for (const entry of market.timeframes()) {
+    out.set(entry.timeframe, {
+      available: entry.origin !== 'unavailable',
+      reason: entry.reason,
+    });
+  }
+  return out;
+}
+
 function syncTimeframes(): void {
+  const availability = timeframeAvailability();
   for (const node of document.querySelectorAll('#timeframes button')) {
     if (!(node instanceof HTMLButtonElement)) continue;
     const button = node;
     const value = (button.dataset['tf'] ?? '1m') as Timeframe;
-    const supported = loaded.base !== null ? value !== '1d' : value === '1d';
+    const entry = availability.get(value);
+    const supported = entry?.available ?? false;
     button.disabled = !supported;
     button.style.opacity = supported ? '1' : '0.35';
     button.setAttribute('aria-pressed', String(value === tf));
-    button.title = supported ? `${value} bars` : 'not available for this symbol';
+    // The reason, not "not available" — a disabled control that does not say why is a
+    // dead end, and the reason here is usually "your key does not cover intraday".
+    button.title = supported ? `${value} bars` : (entry?.reason ?? 'not available for this symbol');
   }
 }
 
 function setTimeframe(next: Timeframe): void {
+  if (next === tf) return;
   const base = loaded.base;
-  if (base === null || next === tf) return;
-  const resampled = next === '1m' ? base : [...resample(base, '1m', next)];
-  if (resampled.length === 0) return;
-  bars = resampled;
-  tf = next;
-  loaded = { bars, timeframe: next, live: loaded.live, base };
+  if (base !== null) {
+    // Synthetic: roll up locally. Instant, and no request against anyone's budget.
+    const resampled = next === '1m' ? base : [...resample(base, '1m', next)];
+    if (resampled.length === 0) return;
+    bars = resampled;
+    tf = next;
+    loaded = { bars, timeframe: next, live: loaded.live, base };
+    build();
+    syncTimeframes();
+    renderLegend(null);
+    status();
+    return;
+  }
+  void fetchTimeframe(symbol, next);
+}
+
+/**
+ * Loads a real series for `wanted` and swaps it in.
+ *
+ * The chart is left alone until the bars arrive: blanking it while a request is in flight,
+ * or worse relabelling the bars already on screen, is worse than a moment of the previous
+ * timeframe with the status line saying what is happening.
+ */
+async function fetchTimeframe(forSymbol: string, wanted: Timeframe): Promise<void> {
+  // The default hold, not a long one: the result replaces this message when it lands, and
+  // a request that never lands must not pin the status line for half a minute.
+  setStatus(`loading ${forSymbol} ${wanted}…`);
+  const result = await market.series(forSymbol, wanted);
+  // The user may have moved on while this was in flight. Applying it now would put one
+  // symbol's bars under another's name.
+  if (forSymbol !== symbol) return;
+  if (!result.ok) {
+    setStatus(`${forSymbol} ${wanted}: ${result.reason}`);
+    return;
+  }
+  bars = [...result.value.bars];
+  tf = wanted;
+  loaded = { bars, timeframe: wanted, live: false, base: null };
+  setLive(false);
   build();
+  installControl();
+  syncSymbolChrome();
   syncTimeframes();
   renderLegend(null);
-  status();
+  setStatus(
+    `${forSymbol} ${wanted} · ${String(result.value.bars.length)} bars · ${result.value.provider}` +
+      (result.value.origin === 'resampled' ? ` (rolled up from ${result.value.origin})` : ''),
+    4000,
+  );
 }
 
 // ---------------------------------------------------------------- toggles
