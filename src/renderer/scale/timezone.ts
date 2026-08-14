@@ -11,15 +11,20 @@
  * it is exact — including DST, because the offset is asked of `Intl` for the specific
  * instant rather than assumed constant.
  *
- * Offsets are cached per (zone, UTC day). A zone's offset changes at most a couple of
- * times a year, so a per-day cache is both correct and enough to keep `Intl` off the
- * per-frame path — it would otherwise be called once per visible tick, every frame.
+ * Offsets are cached per (zone, UTC HOUR), not per day. Per day is wrong, and wrong in a
+ * way that hides: a zone changes offset in the middle of a UTC day twice a year, so the
+ * first lookup on 2026-03-08 cached EST for that whole day and every label after 07:00Z
+ * came out an hour early. Transitions land on hour boundaries in every currently-active
+ * zone, so the hour is the coarsest key that cannot straddle one.
+ *
+ * The cache still keeps `Intl` off the per-frame path: it persists across frames, and a
+ * frame re-reads the same visible ticks, so only newly-revealed hours cost a lookup.
  */
 
 /** IANA zone name, or 'UTC'. */
 export type TimeZone = string;
 
-const MS_DAY = 86_400_000;
+const MS_HOUR = 3_600_000;
 
 /**
  * `Intl.DateTimeFormat` with `timeZoneName: 'longOffset'` yields e.g. "GMT-04:00".
@@ -52,8 +57,8 @@ function formatterFor(zone: TimeZone): Intl.DateTimeFormat | null {
  */
 export function offsetMinutes(zone: TimeZone, t: number): number {
   if (zone === 'UTC' || zone === '') return 0;
-  const day = Math.floor(t / MS_DAY);
-  const key = `${zone}:${String(day)}`;
+  const bucket = Math.floor(t / MS_HOUR);
+  const key = `${zone}:${String(bucket)}`;
   const hit = cache.get(key);
   if (hit !== undefined) return hit;
 
