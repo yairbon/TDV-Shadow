@@ -41,6 +41,12 @@ export interface LoadedSeries {
   /** Which provider answered, for the status line. */
   readonly provider: string;
   readonly origin: Resolution['origin'];
+  /**
+   * The timeframe actually fetched. Equal to `timeframe` unless it was rolled up, and
+   * carried so the status line can name the source rather than repeating the word
+   * "resampled" back at the reader.
+   */
+  readonly sourceTimeframe: Timeframe;
   /** True when this came from cache after a live fetch failed. */
   readonly stale: boolean;
 }
@@ -53,6 +59,16 @@ export interface MarketData {
   quote(symbol: string): Promise<ProviderResult<Quote>>;
   /** The chain, for diagnostics and for the settings sheet. */
   providers(): readonly ProviderCapabilities[];
+  /**
+   * Swaps the whole chain out, as `only` does at construction.
+   *
+   * This exists for one case, and it is not a test seam: inside the published artifact the
+   * only usable provider is reached through `claude.use('mcp')`, which is a promise, while
+   * the app needs a chain the moment it boots. So it boots with the chain that works
+   * everywhere and replaces it if the connector turns out to be available. Callers must
+   * re-read `timeframes()` afterwards — the buttons were built from the old chain.
+   */
+  replaceChain(providers: readonly MarketDataProvider[]): void;
 }
 
 export interface MarketDataOptions {
@@ -81,7 +97,7 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
   const wrap = (provider: MarketDataProvider): MarketDataProvider =>
     withCache(provider, store === undefined ? {} : { store });
 
-  const chain: MarketDataProvider[] =
+  let chain: MarketDataProvider[] =
     options.only !== undefined
       ? [...options.only]
       : [
@@ -125,6 +141,10 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
 
   return {
     providers: capabilities,
+
+    replaceChain(providers) {
+      chain = [...providers];
+    },
 
     timeframes() {
       const caps = capabilities();
@@ -182,6 +202,7 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
         timeframe,
         provider: chosen.capability.label,
         origin: resolution.origin,
+        sourceTimeframe: resolution.fetchAs,
         // `withCache` reports staleness on its own richer method; through the plain
         // interface a served-from-stale result is indistinguishable, so this is only
         // true when the provider itself said so.
@@ -195,7 +216,16 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
       // Every provider that can search, merged — Twelve Data covers more venues, Alpha
       // Vantage sometimes has a name the other misses. Duplicates are collapsed by
       // (symbol, exchange), which is the pair that identifies an instrument.
-      const searchable = chain.filter((provider) => provider.capabilities().canSearch);
+      //
+      // `ready` as well as `canSearch`, matching `quote()`: a provider with no credential
+      // has already said it will refuse everything, so calling it buys nothing and costs
+      // something real — its "no key" refusal is the LAST failure recorded, so when the
+      // provider that could have answered is rate-limited, the reader is told to add a key
+      // for a provider they were not using instead of being told they ran out of credits.
+      const searchable = chain.filter((provider) => {
+        const capability = provider.capabilities();
+        return capability.ready && capability.canSearch;
+      });
       const results = await Promise.all(searchable.map((provider) => provider.searchSymbols(trimmed)));
 
       const merged: SymbolHit[] = [];

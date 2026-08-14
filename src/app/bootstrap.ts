@@ -380,7 +380,13 @@ export interface Chart {
    * index to a time, the others convert that time back to their own index.
    */
   timeAtIndex(index: number): TimeMs | null;
-  /** Applies a live tick and schedules a repaint. Never draws. */
+  /**
+   * Applies a live bar and schedules a repaint. Never draws.
+   *
+   * Replaces the last bar when the open matches and appends when it is newer, so the
+   * same call carries both a tick inside the current bar and the roll into the next one.
+   * An older bar, or one identical to what is stored, is dropped.
+   */
   pushTick(bar: Bar): void;
   geometry(): GeometryDump | null;
   /** Rolling frame-time statistics in CSS ms — the 10.1 budget check reads these. */
@@ -1627,7 +1633,12 @@ export function createChart(o: ChartOptions): Chart {
     },
     layout: () => layout,
     pushTick(bar: Bar): void {
-      if (!series.replaceLast(bar)) return;
+      // `applyBar`, not `replaceLast`: a live source eventually crosses a bar boundary,
+      // and `replaceLast` answers a new bar open with `false` — so the series would sit
+      // frozen on the last bar of the first minute while prices kept arriving, looking
+      // like a stalled feed rather than a dropped bar.
+      const result = series.applyBar(bar);
+      if (result === 'unchanged' || result === 'rejected') return;
       scheduler.invalidate(DirtyFlags.Series | DirtyFlags.Overlay);
       // Alerts are checked HERE rather than in a timer: the tick is the only moment new
       // price information exists, and polling would either miss bars or re-check the

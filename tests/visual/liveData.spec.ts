@@ -69,6 +69,32 @@ const DAILY_BODY = JSON.stringify({
   status: 'ok',
 });
 
+/**
+ * A quote landing INSIDE the newest bar of every series these stubs serve.
+ *
+ * The 1-minute series ends at 15:59 New York and the daily one ends on the same date, so
+ * one timestamp half a minute into that final minute is inside both. The price is above
+ * the bar's high, so applying it has to move two fields, not one.
+ */
+const QUOTE_TIME_MS = Date.UTC(2026, 7, 13, 19, 59, 30);
+const QUOTE_PRICE = 300.9;
+const QUOTE_BODY = {
+  symbol: 'AAPL',
+  close: String(QUOTE_PRICE),
+  // Epoch SECONDS on the wire, as the vendor sends them.
+  timestamp: QUOTE_TIME_MS / 1000,
+  is_market_open: true,
+};
+
+/** One search hit, in the shape Twelve Data returns them. */
+const hit = (symbol: string, name: string, exchange: string): Record<string, string> => ({
+  symbol,
+  instrument_name: name,
+  exchange,
+  country: 'United States',
+  currency: 'USD',
+});
+
 /** Answers every provider call, and records which intervals were asked for. */
 async function stubProviders(page: Page): Promise<string[]> {
   const intervals: string[] = [];
@@ -80,15 +106,19 @@ async function stubProviders(page: Page): Promise<string[]> {
         contentType: 'application/json',
         body: JSON.stringify({
           data: [
-            {
-              symbol: 'AAPL',
-              instrument_name: 'Apple Inc',
-              exchange: 'NASDAQ',
-              country: 'United States',
-              currency: 'USD',
-            },
+            hit('AAPL', 'Apple Inc', 'NASDAQ'),
+            // Not in the bundled list, which is the whole point of asking a provider.
+            hit('ASML', 'ASML Holding NV', 'NASDAQ'),
           ],
         }),
+      });
+      return;
+    }
+    if (url.pathname === '/quote') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(QUOTE_BODY),
       });
       return;
     }
@@ -139,6 +169,20 @@ const seriesShape = (page: Page): Promise<SeriesShape> =>
       ascending,
     };
   });
+
+/** The newest bar on the chart — what a live quote is supposed to move. */
+const lastBar = (page: Page): Promise<{ t: number; h: number; l: number; c: number; count: number }> =>
+  page.evaluate(() => {
+    const win = window as unknown as {
+      __chart: { series: { get: () => { bars: readonly { t: number; h: number; l: number; c: number }[] } } };
+    };
+    const bars = win.__chart.series.get().bars;
+    const bar = bars[bars.length - 1];
+    return { t: bar.t, h: bar.h, l: bar.l, c: bar.c, count: bars.length };
+  });
+
+const liveLabel = (page: Page): Promise<string> =>
+  page.evaluate(() => document.querySelector('#live-label')?.textContent ?? '');
 
 /** Clicks a timeframe button and waits for the swap to land. */
 async function pickTimeframe(page: Page, timeframe: string): Promise<void> {
@@ -306,5 +350,333 @@ test.describe('loading real intraday data', () => {
           .symbol,
     );
     expect(symbol).toBe('DEMO');
+  });
+});
+
+test.describe('searching every venue, not just the bundled list', () => {
+  const openDialog = async (page: Page): Promise<void> => {
+    await page.click('#symbol-button');
+    await page.waitForSelector('#search-input', { state: 'visible' });
+  };
+
+  const rows = (page: Page): Promise<{ symbol: string; source: string }[]> =>
+    page.$$eval('#search-results li', (nodes) =>
+      nodes.map((node) => ({
+        symbol: (node as HTMLElement).dataset['symbol'] ?? '',
+        source: node.querySelector('.src')?.textContent ?? '',
+      })),
+    );
+
+  /** Types, then waits past the debounce and the round trip. */
+  const type = async (page: Page, query: string): Promise<void> => {
+    await page.fill('#search-input', query);
+    await page.waitForTimeout(700);
+  };
+
+  test('finds a symbol that is not in the build at all', async ({ page }) => {
+    // The one thing the old dialog could not do. ASML is not bundled, so before this it
+    // could only be reached by typing the exact ticker into the box and hoping.
+    await stubProviders(page);
+    await open(page);
+    await openDialog(page);
+    await type(page, 'ASML');
+    const found = (await rows(page)).find((row) => row.symbol === 'ASML');
+    expect(found).toBeDefined();
+  });
+
+  test('shows the venue a remote hit trades on', async ({ page }) => {
+    // TSLA on NASDAQ and TSLA on BMV are different instruments in different currencies,
+    // so the row has to say which one it is offering.
+    await stubProviders(page);
+    await open(page);
+    await openDialog(page);
+    await type(page, 'ASML');
+    const found = (await rows(page)).find((row) => row.symbol === 'ASML');
+    expect(found?.source).toBe('NASDAQ');
+  });
+
+  test('does not list an instrument twice when both sides know it', async ({ page }) => {
+    // AAPL is bundled AND comes back from the provider. Two identical rows is the
+    // failure mode of merging two lists without a key.
+    await stubProviders(page);
+    await open(page);
+    await openDialog(page);
+    await type(page, 'AAPL');
+    const appl = (await rows(page)).filter((row) => row.symbol === 'AAPL');
+    expect(appl).toHaveLength(1);
+  });
+
+  test('ranks the remote hits with the local ones rather than after them', async ({ page }) => {
+    // Appended in a block below, an exact remote ticker would sit under every fuzzy
+    // bundled match — typing the name of the thing you want and getting four other
+    // things first.
+    await stubProviders(page);
+    await open(page);
+    await openDialog(page);
+    await type(page, 'ASML');
+    expect((await rows(page))[0]?.symbol).toBe('ASML');
+  });
+
+  test('loads a symbol chosen from a remote hit', async ({ page }) => {
+    await stubProviders(page);
+    await open(page);
+    await openDialog(page);
+    await type(page, 'ASML');
+    await page.click('#search-results li[data-symbol="ASML"]');
+    await page.waitForTimeout(900);
+    const symbol = await page.evaluate(
+      () =>
+        (window as unknown as { __tdv: { getState: () => { symbol: string } } }).__tdv.getState()
+          .symbol,
+    );
+    expect(symbol).toBe('ASML');
+  });
+
+  test('says why the search came back empty, instead of just showing nothing', async ({ page }) => {
+    await page.route('https://api.twelvedata.com/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 429, message: 'API credits exceeded', status: 'error' }),
+      }),
+    );
+    await open(page);
+    await openDialog(page);
+    await type(page, 'ASML');
+    expect(await page.textContent('#search-note')).toContain('credits');
+  });
+
+  test('still offers the typed ticker when nothing matches', async ({ page }) => {
+    // The series endpoints accept tickers the search index does not list, so an unmatched
+    // query is still worth offering — failing loudly beats pretending it does not exist.
+    await stubProviders(page);
+    await open(page);
+    await openDialog(page);
+    await type(page, 'ZZZZ');
+    expect((await rows(page)).some((row) => row.symbol === 'ZZZZ')).toBe(true);
+  });
+});
+
+test.describe('live quotes', () => {
+  const goLive = async (page: Page): Promise<void> => {
+    await page.click('#live-toggle');
+    await page.waitForTimeout(900);
+  };
+
+  test('moves the last bar to the quoted price', async ({ page }) => {
+    await stubProviders(page);
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+
+    const before = await lastBar(page);
+    expect(before.c).not.toBeCloseTo(QUOTE_PRICE, 4);
+    await goLive(page);
+
+    const after = await lastBar(page);
+    expect(after.c).toBeCloseTo(QUOTE_PRICE, 4);
+    // The quote traded above the bar's high, so the high moved with it.
+    expect(after.h).toBeCloseTo(QUOTE_PRICE, 4);
+    // …and it is still the same bar. A quote inside a bar must not append a new one.
+    expect(after.t).toBe(before.t);
+    expect(after.count).toBe(before.count);
+    expect(await liveLabel(page)).toBe('Live');
+  });
+
+  test('leaves the open and the volume alone', async ({ page }) => {
+    // A quote is a price, not a trade report.
+    await stubProviders(page);
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+
+    const read = (): Promise<{ o: number; v: number }> =>
+      page.evaluate(() => {
+        const win = window as unknown as {
+          __chart: { series: { get: () => { bars: readonly { o: number; v: number }[] } } };
+        };
+        const bars = win.__chart.series.get().bars;
+        return { o: bars[bars.length - 1].o, v: bars[bars.length - 1].v };
+      });
+    const before = await read();
+    await goLive(page);
+    expect(await read()).toEqual(before);
+  });
+
+  test('is offered for a generated series as simulated ticks, and says so', async ({ page }) => {
+    // DEMO has no quote to fetch. The toggle still works, but the label must not claim
+    // the random walk is a live price.
+    await open(page);
+    await goLive(page);
+    expect(await liveLabel(page)).toBe('Sim');
+  });
+
+  test('is refused for bundled history, with a reason', async ({ page }) => {
+    // A CSV baked into the build does not move, and polling cannot make it move.
+    await stubProviders(page);
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    const button = await page.evaluate(() => {
+      const node = document.querySelector<HTMLButtonElement>('#live-toggle');
+      return { disabled: node?.disabled ?? false, title: node?.title ?? '' };
+    });
+    expect(button.disabled).toBe(true);
+    expect(button.title).toContain('bundled');
+  });
+
+  test('becomes available once the series comes from a provider', async ({ page }) => {
+    await stubProviders(page);
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+    const disabled = await page.evaluate(
+      () => document.querySelector<HTMLButtonElement>('#live-toggle')?.disabled ?? true,
+    );
+    expect(disabled).toBe(false);
+  });
+
+  test('reports a failing quote as stale rather than pretending to be live', async ({ page }) => {
+    // The chart stops moving either way; only one of the two is worth acting on.
+    await page.route('https://api.twelvedata.com/**', async (route: Route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/quote') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 429, message: 'API credits exceeded', status: 'error' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: url.searchParams.get('interval') === '1day' ? DAILY_BODY : minuteBody(120),
+      });
+    });
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+    await goLive(page);
+
+    expect(await liveLabel(page)).toBe('Stale');
+    const title = await page.evaluate(
+      () => document.querySelector<HTMLButtonElement>('#live-toggle')?.title ?? '',
+    );
+    expect(title).toContain('credits');
+  });
+
+  test('says the market is closed when the provider says so', async ({ page }) => {
+    await page.route('https://api.twelvedata.com/**', async (route: Route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/quote') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ ...QUOTE_BODY, is_market_open: false }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: url.searchParams.get('interval') === '1day' ? DAILY_BODY : minuteBody(120),
+      });
+    });
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+    await goLive(page);
+    expect(await liveLabel(page)).toBe('Closed');
+  });
+
+  test('never appends a bar from a quote that is past the current one', async ({ page }) => {
+    // A synthesized next bar would carry no volume and an open equal to its close: a
+    // real-looking bar that never traded that way.
+    await page.route('https://api.twelvedata.com/**', async (route: Route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/quote') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            ...QUOTE_BODY,
+            // Hours past the end of the series it is quoting.
+            timestamp: (QUOTE_TIME_MS + 6 * 3_600_000) / 1000,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: url.searchParams.get('interval') === '1day' ? DAILY_BODY : minuteBody(120),
+      });
+    });
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+
+    const before = await lastBar(page);
+    await goLive(page);
+    const after = await lastBar(page);
+    expect(after.t).toBe(before.t);
+    expect(after.c).toBe(before.c);
+    expect(after.count).toBe(before.count);
+  });
+
+  test('stops polling when the toggle goes off', async ({ page }) => {
+    let quotes = 0;
+    await page.route('https://api.twelvedata.com/**', async (route: Route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/quote') {
+        quotes += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(QUOTE_BODY),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: url.searchParams.get('interval') === '1day' ? DAILY_BODY : minuteBody(120),
+      });
+    });
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await pickTimeframe(page, '1m');
+    await goLive(page);
+    expect(quotes).toBeGreaterThan(0);
+
+    await page.click('#live-toggle');
+    const settled = quotes;
+    await page.waitForTimeout(1500);
+    expect(quotes).toBe(settled);
+    expect(await liveLabel(page)).toBe('Live');
   });
 });

@@ -14,6 +14,10 @@ import { createChart, type Chart, type RendererMode } from './app/bootstrap.js';
 import { generateBars, lcg, nextTick } from './app/feed.js';
 import { findSymbol, parseDailyCsv, SYMBOLS } from './app/marketData.js';
 import { createMarketData } from './providers/registry.js';
+import type { SymbolHit } from './providers/types.js';
+import { applyQuote } from './providers/quoteBar.js';
+import { detectConnectorProvider } from './providers/artifactRuntime.js';
+import { createBundledProvider } from './providers/bundled.js';
 import { installControlApi } from './app/control.js';
 import {
   clearWorkspace,
@@ -196,11 +200,39 @@ const market = createMarketData({
   ...(params.get('avkey') === null ? {} : { alphaVantageKey: params.get('avkey') ?? '' }),
 });
 
+/**
+ * Upgrades the chain when this build is running as a published artifact.
+ *
+ * There, HTTPS to a vendor is blocked outright and the only route to data is the viewer's
+ * own connector — so the REST providers must not merely be deprioritised, they must leave
+ * the chain. Left in, they would claim every timeframe natively, enable all six buttons,
+ * and fail on each press, which is exactly the lying-button problem the capability layer
+ * was built to remove.
+ */
+async function adoptConnectorProvider(): Promise<void> {
+  const connector = await detectConnectorProvider();
+  if (connector === null) return;
+  market.replaceChain([connector, createBundledProvider()]);
+  syncTimeframes();
+  const capability = connector.capabilities();
+  setStatus(`live data via ${capability.label} · daily`, 5000);
+}
+
+/** Where a pane's bars came from. See `Loaded.origin`. */
+type DataOrigin = 'generated' | 'bundled' | 'provider';
+
 interface Loaded {
   readonly bars: Bar[];
   readonly timeframe: Timeframe;
-  /** Whether simulated ticks may be appended — never for real history. */
-  readonly live: boolean;
+  /**
+   * Where these bars came from, which decides what "live" can honestly mean.
+   *
+   * `generated` may be walked forward with simulated ticks; `provider` may be polled for
+   * a real quote; `bundled` is a file on disk and has neither. Carried as one field
+   * rather than a pair of booleans because the three are mutually exclusive and a pair
+   * can express a state that does not exist.
+   */
+  readonly origin: DataOrigin;
   /** Base 1m series, kept so timeframe buttons can resample without refetching. */
   readonly base: Bar[] | null;
 }
@@ -209,12 +241,12 @@ function loadSymbol(name: string): Loaded {
   const definition = findSymbol(name);
   if (definition === null || definition.source === 'synthetic') {
     const base = generateBars({ seed, count: num('bars', 400), tf: '1m' });
-    return { bars: base, timeframe: '1m', live: true, base };
+    return { bars: base, timeframe: '1m', origin: 'generated', base };
   }
   return {
     bars: parseDailyCsv(definition.csv ?? ''),
     timeframe: definition.timeframe,
-    live: false,
+    origin: 'bundled',
     base: null,
   };
 }
@@ -878,7 +910,36 @@ function syncSymbolChrome(): void {
   const picker = sel('#symbol-pick');
   if (picker !== null) picker.value = symbol;
   const liveButton = btn('#live-toggle');
-  if (liveButton !== null) liveButton.disabled = !loaded.live;
+  if (liveButton !== null) {
+    const live = liveAvailability();
+    liveButton.disabled = !live.available;
+    liveButton.title = live.reason;
+  }
+}
+
+/**
+ * Whether the Live toggle can do anything for what is on screen, and what to say if not.
+ *
+ * The rule used to be "generated series only", which was right when a simulated random
+ * walk was the only thing "live" could mean. It is wrong now: real bars can be polled for
+ * a real quote. It is still wrong to offer it for bundled CSVs — those are a file, and no
+ * amount of polling makes a file move.
+ */
+function liveAvailability(): { available: boolean; reason: string } {
+  if (loaded.origin === 'generated') {
+    return { available: true, reason: 'Stream simulated ticks — this series is generated' };
+  }
+  if (loaded.origin === 'bundled') {
+    return {
+      available: false,
+      reason: 'bundled history has no live price — load this symbol from a provider',
+    };
+  }
+  const quoter = market.providers().find((capability) => capability.ready && capability.canQuote);
+  if (quoter === undefined) {
+    return { available: false, reason: 'no configured provider serves a live quote' };
+  }
+  return { available: true, reason: `Poll ${quoter.label} for the latest price` };
 }
 
 /** Toolbar toggles that reflect per-pane state. */
@@ -1011,7 +1072,7 @@ async function loadTicker(ticker: string): Promise<void> {
   symbol = name;
   bars = [...result.value.bars];
   tf = '1d';
-  loaded = { bars, timeframe: tf, live: false, base: null };
+  loaded = { bars, timeframe: tf, origin: 'provider', base: null };
   setLive(false);
   build();
   installControl();
@@ -1118,7 +1179,7 @@ function setTimeframe(next: Timeframe): void {
     if (resampled.length === 0) return;
     bars = resampled;
     tf = next;
-    loaded = { bars, timeframe: next, live: loaded.live, base };
+    loaded = { bars, timeframe: next, origin: loaded.origin, base };
     build();
     syncTimeframes();
     renderLegend(null);
@@ -1149,7 +1210,7 @@ async function fetchTimeframe(forSymbol: string, wanted: Timeframe): Promise<voi
   }
   bars = [...result.value.bars];
   tf = wanted;
-  loaded = { bars, timeframe: wanted, live: false, base: null };
+  loaded = { bars, timeframe: wanted, origin: 'provider', base: null };
   setLive(false);
   build();
   installControl();
@@ -1158,7 +1219,9 @@ async function fetchTimeframe(forSymbol: string, wanted: Timeframe): Promise<voi
   renderLegend(null);
   setStatus(
     `${forSymbol} ${wanted} · ${String(result.value.bars.length)} bars · ${result.value.provider}` +
-      (result.value.origin === 'resampled' ? ` (rolled up from ${result.value.origin})` : ''),
+      (result.value.origin === 'resampled'
+        ? ` (rolled up from ${result.value.sourceTimeframe})`
+        : ''),
     4000,
   );
 }
@@ -1195,7 +1258,7 @@ function tick(): void {
     const isActive = pane.index === activeIndex;
     // Real history is not live: fabricating ticks onto a daily series would invent
     // prices that never traded.
-    if (!(isActive ? loaded.live : pane.loaded.live)) continue;
+    if ((isActive ? loaded.origin : pane.loaded.origin) !== 'generated') continue;
     const target = isActive ? chart : pane.chart;
     const current = target?.series.get().bars;
     // Length guard, not an `undefined` check: `noUncheckedIndexedAccess` is off, so the
@@ -1207,18 +1270,180 @@ function tick(): void {
   renderLegend(null);
 }
 
+/**
+ * Live state, as it is shown on the toggle.
+ *
+ * The distinction is the point: a chart that is not moving because the exchange is shut
+ * and a chart that is not moving because the provider stopped answering look identical,
+ * and only one of them is worth doing something about.
+ */
+type LiveState = 'off' | 'sim' | 'live' | 'closed' | 'stale';
+
+const LIVE_LABEL: Readonly<Record<LiveState, string>> = Object.freeze({
+  off: 'Live',
+  sim: 'Sim',
+  live: 'Live',
+  closed: 'Closed',
+  stale: 'Stale',
+});
+
+function setLiveState(state: LiveState, detail: string): void {
+  const button = btn('#live-toggle');
+  const label = el('#live-label');
+  if (label !== null) label.textContent = LIVE_LABEL[state];
+  button?.setAttribute('data-live-state', state);
+  button?.setAttribute('title', detail);
+}
+
+/**
+ * How often the quote is asked for.
+ *
+ * Just past the cache's own 20-second quote window, so a poll is a real request rather
+ * than the same cached number handed back — and slow enough that a free key's per-minute
+ * budget survives a chart left open all day.
+ */
+const QUOTE_POLL_MS = 25_000;
+/**
+ * After a roll-forward that changed nothing, wait this long before asking again.
+ *
+ * A roll can legitimately answer with the bars it already had: the provider cache holds a
+ * series for a fraction of its own bar period, so the first ask after a bar closes may be
+ * served from the page fetched during that bar. The new bar then arrives up to one cache
+ * window late rather than immediately. Retrying every poll would spend the budget on the
+ * same cached answer, so this backs off to roughly the length of that window.
+ */
+const ROLL_RETRY_MS = 30_000;
+
+let quoteTimer: number | null = null;
+/** True while a poll is out, so a slow provider cannot stack requests behind itself. */
+let quotePending = false;
+let nextRollAt = 0;
+
 function setLive(on: boolean): void {
   const button = btn('#live-toggle');
   if (liveTimer !== null) {
     window.clearInterval(liveTimer);
     liveTimer = null;
   }
-  if (on) liveTimer = window.setInterval(tick, 250);
+  if (quoteTimer !== null) {
+    window.clearInterval(quoteTimer);
+    quoteTimer = null;
+  }
   button?.setAttribute('aria-pressed', String(on));
+  if (!on) {
+    setLiveState('off', 'Stream live prices');
+    return;
+  }
+  // Simulated ticks and real quotes are the same toggle but not the same mechanism, and
+  // which one runs is decided by the data on screen rather than by a separate control:
+  // a generated series has no quote to fetch, and real bars must never be nudged by a
+  // random walk.
+  if (loaded.origin === 'generated') {
+    liveTimer = window.setInterval(tick, 250);
+    setLiveState('sim', 'Simulated ticks — this series is generated');
+    return;
+  }
+  setLiveState('live', 'Polling the provider for the latest price');
+  nextRollAt = 0;
+  quoteTimer = window.setInterval(() => void pollQuote(), QUOTE_POLL_MS);
+  // Immediately, too: waiting a full interval for the first price makes the toggle feel
+  // broken for as long as it takes to wonder whether it worked.
+  void pollQuote();
 }
 
+/**
+ * Asks for the latest price and folds it into the bar it belongs to.
+ *
+ * The symbol and timeframe are captured before the request and re-checked after it: a
+ * quote that arrives once the user has moved on describes an instrument that is no longer
+ * drawn, and applying it would move one symbol's candle by another symbol's price.
+ */
+async function pollQuote(): Promise<void> {
+  if (quotePending) return;
+  const forSymbol = symbol;
+  const forTimeframe = tf;
+  const target = currentChart();
+  if (target === null) return;
+  quotePending = true;
+  try {
+    const result = await market.quote(forSymbol);
+    if (forSymbol !== symbol || forTimeframe !== tf || quoteTimer === null) return;
+    if (!result.ok) {
+      setLiveState('stale', `${forSymbol}: ${result.reason}`);
+      // No key and no entitlement do not improve by asking again every 25 seconds; a
+      // rate limit or a dropped connection might, so those keep polling.
+      if (result.kind === 'no-key' || result.kind === 'entitlement') setLive(false);
+      return;
+    }
+    const quote = result.value;
+    const current = target.series.get().bars;
+    if (current.length === 0) return;
+    const outcome = applyQuote(current[current.length - 1], quote, forTimeframe);
+    if (outcome.kind === 'stale') {
+      setLiveState('stale', `${forSymbol}: ${outcome.reason}`);
+      return;
+    }
+    if (outcome.kind === 'refetch') {
+      await rollForward(forSymbol, forTimeframe);
+      return;
+    }
+    if (outcome.kind === 'update') {
+      target.pushTick(outcome.bar);
+      bars = [...target.series.get().bars];
+      renderLegend(null);
+    }
+    // `marketOpen` is null when the provider does not say, which is not the same as
+    // closed — reporting it as closed would explain a moving chart with a shut exchange.
+    setLiveState(
+      quote.marketOpen === false ? 'closed' : 'live',
+      `${forSymbol} ${String(quote.price)}${quote.marketOpen === false ? ' · market closed' : ''}`,
+    );
+  } finally {
+    quotePending = false;
+  }
+}
+
+/**
+ * Pulls the newest bars in when the quote has moved past the last one held.
+ *
+ * The bars are pushed in rather than rebuilding the chart, because a rebuild resets the
+ * view — every bar boundary would snap a chart the user had panned back to the right-hand
+ * edge. Bars at or after the current last are pushed, so the final partial bar is also
+ * corrected with the volume the quote could not supply.
+ */
+async function rollForward(forSymbol: string, forTimeframe: Timeframe): Promise<void> {
+  const now = Date.now();
+  if (now < nextRollAt) return;
+  const result = await market.series(forSymbol, forTimeframe, ROLL_FORWARD_BARS);
+  if (forSymbol !== symbol || forTimeframe !== tf || quoteTimer === null) return;
+  const target = currentChart();
+  if (target === null) return;
+  if (!result.ok) {
+    setLiveState('stale', `${forSymbol}: ${result.reason}`);
+    nextRollAt = Date.now() + ROLL_RETRY_MS;
+    return;
+  }
+  const before = target.series.get().bars;
+  const lastT = before.length === 0 ? 0 : before[before.length - 1].t;
+  let applied = 0;
+  for (const bar of result.value.bars) {
+    if (bar.t < lastT) continue;
+    target.pushTick(bar);
+    applied += 1;
+  }
+  const after = target.series.get().bars;
+  bars = [...after];
+  renderLegend(null);
+  // A cached page answers with the same bars it did a moment ago, which is not a failure
+  // but is also not progress — backing off keeps a closed market from re-asking forever.
+  if (applied === 0 || after.length === before.length) nextRollAt = Date.now() + ROLL_RETRY_MS;
+}
+
+/** Enough to close the current bar and open the next, with room for a gap. */
+const ROLL_FORWARD_BARS = 5;
+
 el('#live-toggle')?.addEventListener('click', () => {
-  setLive(liveTimer === null);
+  setLive(liveTimer === null && quoteTimer === null);
 });
 
 // ---------------------------------------------------------------- chart type
@@ -1777,6 +2002,10 @@ if (saved !== null && saved.layout !== '1') {
 }
 status();
 
+// Fire and forget: it resolves to nothing at all outside a published page, and the chart
+// must not wait on a promise that will usually answer `null`.
+void adoptConnectorProvider();
+
 // ---------------------------------------------------------------- symbol search
 
 const searchDialog = document.querySelector('#search');
@@ -1792,29 +2021,123 @@ interface Candidate {
   readonly labelRanges: readonly MatchRange[];
 }
 
+/**
+ * Remote hits for the query they were fetched for.
+ *
+ * Held with their query rather than alone: a response that arrives after the user has
+ * typed further describes a query that is no longer on screen, and merging it would show
+ * results for text nobody can see. `remoteFor` is compared before anything is merged.
+ */
+let remoteHits: readonly SymbolHit[] = [];
+let remoteFor = ' ';
+let remoteNote = '';
+let remoteSeq = 0;
+let remoteTimer: number | null = null;
+
+/** A symbol the ranker can score, plus where it came from. */
+interface SearchEntry {
+  readonly symbol: string;
+  readonly label: string;
+  readonly source: string;
+}
+
 function candidates(query: string): Candidate[] {
   const q = query.trim().toUpperCase();
-  const local = searchSymbols(query, SYMBOLS, { recents: recentSymbols }).map((hit) => ({
+
+  const entries: SearchEntry[] = SYMBOLS.map((definition) => ({
+    symbol: definition.symbol,
+    label: definition.label,
+    source: definition.source === 'synthetic' ? 'demo' : 'bundled',
+  }));
+
+  // Remote hits join the SAME ranking pass rather than being appended in a block below
+  // the local ones. Appending would put an exact remote ticker under a fuzzy bundled
+  // match — typing NVDA would offer four other things before the one instrument that is
+  // exactly what was typed.
+  if (remoteFor === q) {
+    const known = new Set(entries.map((entry) => entry.symbol));
+    for (const hit of remoteHits) {
+      if (known.has(hit.symbol)) continue;
+      known.add(hit.symbol);
+      entries.push({
+        symbol: hit.symbol,
+        label: hit.name === '' ? hit.symbol : hit.name,
+        // The venue, not the vendor: TSLA on NASDAQ and TSLA on BMV are different
+        // instruments in different currencies, and that is the distinction worth the
+        // column. Which provider answered is a diagnostic, not something to pick between.
+        source: hit.exchange === '' ? hit.country : hit.exchange,
+      });
+    }
+  }
+
+  const ranked = searchSymbols(query, entries, { recents: recentSymbols }).map((hit) => ({
     symbol: hit.item.symbol,
     label: hit.item.label,
-    source: hit.item.source === 'synthetic' ? 'demo' : 'bundled',
+    source: hit.item.source,
     symbolRanges: hit.symbolRanges,
     labelRanges: hit.labelRanges,
   }));
 
-  // An unmatched query is still offered, because the ticker box can fetch it when the
-  // page has network. Offering it and failing loudly beats pretending it does not exist.
-  if (q !== '' && !local.some((c) => c.symbol === q)) {
-    local.push({
+  // An unmatched query is still offered: search covers the venues the providers index,
+  // and the series endpoints accept tickers the search index does not list. Offering it
+  // and failing loudly beats pretending the symbol does not exist.
+  if (q !== '' && !ranked.some((c) => c.symbol === q)) {
+    ranked.push({
       symbol: q,
-      label: 'Fetch from Alpha Vantage',
-      source: 'live',
+      label: `Load ${q} from the data provider`,
+      source: 'fetch',
       symbolRanges: [],
       labelRanges: [],
     });
   }
-  return local;
+  return ranked;
 }
+
+/**
+ * Asks the provider chain about `query`, debounced.
+ *
+ * Debounced rather than fired per keystroke because a five-letter ticker is five
+ * requests against a metered budget, four of which describe a prefix the user was only
+ * passing through. The sequence number is what keeps a slow first response from landing
+ * on top of a fast second one — comparing the query alone does not, since the same query
+ * can be in flight twice after a backspace and retype.
+ */
+function scheduleRemoteSearch(query: string): void {
+  const q = query.trim().toUpperCase();
+  if (remoteTimer !== null) window.clearTimeout(remoteTimer);
+  remoteTimer = null;
+  if (q === '') {
+    remoteHits = [];
+    remoteFor = '';
+    remoteNote = '';
+    return;
+  }
+  if (remoteFor === q) return;
+  remoteNote = 'searching…';
+  remoteTimer = window.setTimeout(() => {
+    remoteTimer = null;
+    const seq = ++remoteSeq;
+    void market.search(q).then((result) => {
+      if (seq !== remoteSeq) return;
+      remoteFor = q;
+      if (result.ok) {
+        remoteHits = result.value;
+        remoteNote = result.value.length === 0 ? 'no venue lists that' : '';
+      } else {
+        // The reason, not a generic failure: "you have used your 8 credits" and "no key"
+        // call for completely different actions from the reader.
+        remoteHits = [];
+        remoteNote = result.reason;
+      }
+      // Only if the dialog is still showing this query — the user may have typed on, or
+      // closed the dialog entirely, while the request was out.
+      if (searchInput !== null && searchInput.value.trim().toUpperCase() === q) renderSearch();
+    });
+  }, SEARCH_DEBOUNCE_MS);
+}
+
+/** Long enough to skip the letters of a ticker typed at speed, short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 220;
 
 /** Escapes text destined for `innerHTML`. */
 function escapeHtml(text: string): string {
@@ -1861,16 +2184,34 @@ function renderSearch(): void {
     )
     .join('');
   const note = el('#search-note');
-  if (note !== null) {
-    note.textContent =
-      params.get('apikey') === null ? 'live fetch needs ?apikey=' : 'live fetch enabled';
+  if (note !== null) note.textContent = searchNote();
+}
+
+/**
+ * The line under the results.
+ *
+ * Says what the search actually covered, since that changes with the key: without one,
+ * Twelve Data's symbol index still answers (it needs no credential) but the series behind
+ * a hit will not load, and promising otherwise sets the reader up to pick a symbol that
+ * then fails.
+ */
+function searchNote(): string {
+  if (remoteNote !== '') return remoteNote;
+  if (remoteFor !== '' && remoteHits.length > 0) {
+    return `${String(remoteHits.length)} across all venues`;
   }
+  return params.get('apikey') === null ? 'intraday needs ?apikey=' : 'live data enabled';
 }
 
 function openSearch(): void {
   if (!(searchDialog instanceof HTMLDialogElement)) return;
   searchIndex = 0;
   if (searchInput !== null) searchInput.value = '';
+  // The box is cleared on open, so last session's hits belong to a query that is no
+  // longer there; leaving them would show a stale list against an empty field.
+  remoteHits = [];
+  remoteFor = '';
+  remoteNote = '';
   renderSearch();
   searchDialog.showModal();
   searchInput?.focus();
@@ -1888,6 +2229,7 @@ function chooseSearch(): void {
 el('#symbol-button')?.addEventListener('click', openSearch);
 searchInput?.addEventListener('input', () => {
   searchIndex = 0;
+  scheduleRemoteSearch(searchInput.value);
   renderSearch();
 });
 searchInput?.addEventListener('keydown', (event) => {

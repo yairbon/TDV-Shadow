@@ -285,12 +285,68 @@ All three now derive from the registry, and a test walks it rather than naming i
     and was clipped away entirely: correct values, nothing on screen. It joins the RSI's
     pane, on the RSI's scale, in a colour the RSI is not already using.
 
+- **Live prices, and every stock.** The provider layer is finished at both ends now.
+
+  Search asks every ready provider in the chain and merges the answers with the bundled
+  list into ONE ranking pass. Appending remote hits below local ones was the tempting
+  shape and the wrong one — an exact remote ticker would then sit under every fuzzy
+  bundled match, so typing the name of the thing you want returns four other things
+  first. Hits are deduplicated by `(symbol, exchange)`, which is the pair that identifies
+  an instrument: TSLA on NASDAQ and TSLA on BMV are different instruments in different
+  currencies and both rows are kept.
+
+  The Live toggle is no longer a synonym for the tick simulator. What it does is decided
+  by where the bars came from: a generated series is walked forward with simulated ticks,
+  a provider series is polled for a real quote, and bundled history refuses with a reason
+  — no amount of polling makes a file move. The label distinguishes `Live`, `Sim`,
+  `Closed` and `Stale`, because "not moving because the exchange is shut" and "not moving
+  because the provider stopped answering" look identical on a chart and only one of them
+  is worth acting on.
+
+  Two things this turned up:
+
+  - A quote is a price, not a trade report. It moves the close and widens the extremes; the
+    open and the volume are left exactly as they were. And when a quote arrives from PAST
+    the last bar, the honest move is to ask the provider for bars rather than synthesize
+    one: a fabricated bar carries `v = 0` and an open equal to its close, which is a
+    real-looking bar that never traded that way, and for a daily series the next bar's open
+    time is a calendar question — weekends, holidays, half days — that a timestamp cannot
+    answer.
+  - `pushTick` used `replaceLast`, which answers a new bar open with `false`. A live source
+    eventually crosses a bar boundary, so the series would have sat frozen on the last bar
+    of the first minute while prices kept arriving — a stalled feed rather than a dropped
+    bar. It applies the bar now, replacing or appending on its own open.
+
+  A search failure also surfaced a real bug: the chain asked providers that had already
+  declared themselves unready, and their "no key" refusal was recorded as the LAST failure
+  — so a rate-limited Twelve Data reported "add an Alpha Vantage key" to someone who was
+  not using Alpha Vantage.
+
+- **The published artifact reaches real data.** That page runs with no outbound network at
+  all, so every REST provider is dead there. The route that does work is the viewer's own
+  connector: the page asks the claude.ai runtime to make the call, it runs with the
+  viewer's credentials, and the page never sees a token. The transport is the only thing
+  written twice — the CSV that comes back is byte-for-byte what the REST endpoint serves,
+  so the parsing, the session-midnight stamping and the error classification are shared
+  with the REST adapter.
+
+  The chain is REPLACED rather than reordered when the connector is found. Left in, the
+  REST providers would claim every timeframe natively, enable all six buttons, and fail on
+  each press — exactly the lying-button problem the capability layer exists to remove.
+
+  What the artifact gets is **daily bars and a quote, and nothing finer**, because Alpha
+  Vantage gates intraday behind a premium key. 1m/5m/1h are real only when the app is run
+  locally against a Twelve Data key.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented
   expression DSL with a real parser, named as itself.
-- **A live symbol universe.** Search over "every ticker" needs a backend this build does
-  not have. Search covers bundled symbols plus a live-fetch escape hatch.
+- **A symbol universe of our own.** Search now merges every provider in the chain with the
+  bundled list, so it reaches whatever the venues index — but the index is theirs, not
+  ours, and it is only as complete and as current as the key in use. An unmatched query is
+  still offered as a row, because the series endpoints accept tickers the search index
+  does not list.
 - **Broker/order integration.** Out of scope for a charting library.
 - **Volume-weighted indicators on a resampling type** are computed over the brick series.
   With brick volume now summed from the source that is well defined, but a VWAP over

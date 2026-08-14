@@ -17,3 +17,12 @@ allowed in.
 - A provider declares what it can actually serve (`capabilities()`), and the UI is built
   from that declaration rather than from a hardcoded list. An endpoint that is premium on
   the caller's key is *not available*, and saying so is the provider's job.
+- A provider that reports `ready: false` is not called. It has already said it will refuse
+  everything, so calling it spends budget for nothing and — worse — its refusal becomes the
+  reason the chain reports when a request fails, drowning out the provider that actually
+  had something to say.
+- Credentials come from the URL and are never persisted. A credential in `localStorage`
+  outlives the intent to use it.
+- A quote is a price and a timestamp, and nothing more may be inferred from it. It may move
+  a bar's close and widen its extremes; it may not set an open, a volume, or bring a new
+  bar into existence.

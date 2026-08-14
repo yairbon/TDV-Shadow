@@ -110,8 +110,10 @@ describe('timeframe availability', () => {
       ...noPersist,
       only: [intraday.provider, daily.provider],
     });
-    await market.series('AAPL', '1m', 10);
+    const result = await market.series('AAPL', '1m', 10);
     expect(intraday.asked.at(-1)).toMatchObject({ timeframe: '1m' });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.sourceTimeframe).toBe('1m');
   });
 
   it('resamples when no provider has the timeframe natively', async () => {
@@ -122,6 +124,9 @@ describe('timeframe availability', () => {
     expect(result.value.origin).toBe('resampled');
     // It fetched the FINER series, not the one asked for.
     expect(minute.asked.at(-1)?.timeframe).toBe('1m');
+    // And it says WHICH one, so the status line can name the source instead of telling
+    // the reader their bars were "rolled up from resampled".
+    expect(result.value.sourceTimeframe).toBe('1m');
     // 120 one-minute bars roll into 24 five-minute bars.
     expect(result.value.bars.length).toBeLessThan(120);
     expect(result.value.bars.length).toBeGreaterThan(0);
@@ -196,6 +201,22 @@ describe('searching across providers', () => {
     const result = await market.search('tesla');
     if (!result.ok) throw new Error(result.reason);
     expect(result.value.filter((hit) => hit.symbol === 'TSLA')).toHaveLength(2);
+  });
+
+  it('does not ask a provider that has no credential', async () => {
+    // Not just wasted effort. Its refusal is a failure like any other, so it becomes the
+    // reason reported when nothing matched — and "add a key for Alpha Vantage" is the
+    // wrong thing to tell someone whose Twelve Data credits ran out.
+    const unready = stub('alpha-vantage', ['1d'], { ready: false });
+    const limited: MarketDataProvider = {
+      ...stub('twelve-data', ['1m']).provider,
+      searchSymbols: () => Promise.resolve(fail('rate-limit', 'API credits exceeded')),
+    };
+    const market = createMarketData({ ...noPersist, only: [limited, unready.provider] });
+    const result = await market.search('anything');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toContain('credits');
   });
 
   it('does not call out for an empty query', async () => {
