@@ -17,6 +17,10 @@ allowed in.
 - A provider declares what it can actually serve (`capabilities()`), and the UI is built
   from that declaration rather than from a hardcoded list. An endpoint that is premium on
   the caller's key is *not available*, and saying so is the provider's job.
+- A provider that needs infrastructure the build may not have — Yahoo needs a same-origin
+  proxy — takes `ready` as an argument rather than sniffing for it. There is no honest way
+  to detect a proxy synchronously, and the answer decides whether six timeframe buttons
+  light up.
 - The chain is a chain. A request tries every provider that could serve it, in order, and
   only fails when all of them have. `series` named one provider and gave up on its failure,
   so a momentarily unreachable connector did not fall through to the CSVs sitting behind it

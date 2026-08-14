@@ -372,6 +372,58 @@ All three now derive from the registry, and a test walks it rather than naming i
   and reading back "This is a premium endpoint". The artifact gets daily. 1m/5m/1h need
   either a premium key or the app run locally against Twelve Data.
 
+- **Intraday for every symbol, with no key: Yahoo Finance behind a proxy.**
+
+  The complaint was "1 min and 5 min do not work for other stocks", and the cause was
+  mundane: the app shipped Twelve Data's `demo` key, which serves **AAPL and nothing else**
+  — every other ticker answers 401. The intraday plumbing was fine; it was being handed a
+  one-symbol credential.
+
+  Every free source was then tested rather than remembered, on the one axis that decides it
+  for a browser-only app — whether the response carries `Access-Control-Allow-Origin`:
+
+  | Source | CORS | Free intraday | Limit |
+  |---|---|---|---|
+  | Yahoo Finance | **none** | all symbols, 1m–1d, real time | needs a proxy |
+  | Twelve Data (own key) | `*` | all symbols, real time | 8/min, 800/day |
+  | Twelve Data (`demo`) | `*` | AAPL only | — |
+  | Alpha Vantage | `*` | none — premium endpoint | 25/day |
+  | Finnhub | `*` | none — candles 403 on free | — |
+  | Polygon | yes | minute aggs, end-of-day only | 5/min |
+  | Alpaca | `*` | IEX only, secret in the browser | 200/min |
+  | Tiingo | none | — | unusable from a browser |
+
+  Yahoo wins on data and loses on CORS, and CORS is the one that can be engineered away: the
+  dev server proxies `/yahoo/*`, so the browser makes a same-origin request and the server
+  makes the outbound one. `vite.config.ts` exists for exactly this.
+
+  That buys something no other provider here has: **the whole path is verified in a real
+  browser against the real endpoint.** This sandbox blocks browser egress, so every other
+  adapter's browser hop is proven only against intercepted responses. Behind the proxy the
+  browser only talks to localhost, so PLTR and ASML were driven live at 1d/1h/5m/1m with the
+  last bar landing on the current minute.
+
+  What the wire turned out to be, none of it guessable:
+
+  - Timestamps are epoch **seconds, UTC, bar open** — no zone conversion, unlike Twelve Data.
+  - The **last row is not a bar.** Yahoo appends the live quote at `meta.regularMarketTime`,
+    a precise trade time, so it sits 23 seconds past a boundary. Kept, every intraday series
+    ends with a bar open at 17:10:23.
+  - Daily and 4-hour bars are stamped at the **session** open, and Yahoo's 4h buckets are
+    session-aligned — better than rolling them up here, which buckets on UTC and splits
+    every session in two.
+  - `meta.validRanges` is **wrong**: it advertises `1y` and `max` for a 1-minute series that
+    refuses anything past about eight days. The range table is measured instead.
+  - Hourly bars therefore sit on the half hour for a US venue. A test asserting
+    `t % 3600000 === 0` calls a correct series broken; the property is one consistent phase,
+    not zero.
+
+  The cost, stated plainly: it is an unofficial endpoint that can change without notice, and
+  it works only where something is proxying — never in the published artifact. Both are
+  priced in. It sits first in the chain precisely because the chain falls through when it
+  breaks, and `ready` is passed in rather than sniffed so a build with no proxy does not
+  light up six buttons it cannot serve.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

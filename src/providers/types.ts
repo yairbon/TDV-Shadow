@@ -16,7 +16,12 @@
 
 import type { Bar, Timeframe, TimeMs } from '../data/types.js';
 
-export type ProviderId = 'twelve-data' | 'alpha-vantage' | 'alpha-vantage-mcp' | 'bundled';
+export type ProviderId =
+  | 'yahoo'
+  | 'twelve-data'
+  | 'alpha-vantage'
+  | 'alpha-vantage-mcp'
+  | 'bundled';
 
 /**
  * Why a request failed, in the terms the caller has to act on.

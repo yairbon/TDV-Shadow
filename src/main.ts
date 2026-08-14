@@ -196,6 +196,11 @@ const seed = num('seed', 7);
  * the intent to use it.
  */
 const market = createMarketData({
+  // The dev server proxies `/yahoo`, so that is exactly where this route exists. `?yahoo=1`
+  // is the escape hatch for anyone serving a build behind their own proxy. Neither is true
+  // of the published artifact, which is the case that must not light up six buttons it
+  // cannot serve.
+  yahoo: import.meta.env.DEV || params.get('yahoo') === '1',
   ...(params.get('apikey') === null ? {} : { twelveDataKey: params.get('apikey') ?? '' }),
   ...(params.get('avkey') === null ? {} : { alphaVantageKey: params.get('avkey') ?? '' }),
 });

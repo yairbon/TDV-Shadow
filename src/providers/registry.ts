@@ -3,6 +3,11 @@
  *
  * Assembles, in preference order:
  *
+ * 0. **Yahoo Finance** — every timeframe, every symbol, real time, no key, and therefore
+ *    first whenever it is available at all. It is only available behind a same-origin
+ *    proxy (see `vite.config.ts`), so `yahoo` is opt-in and defaults off; an unofficial
+ *    endpoint sitting first is safe precisely because the chain falls through when it
+ *    breaks.
  * 1. **Twelve Data** — the only free source verified to serve 1m/5m/1h/1d over CORS, so
  *    it is the one that answers "live 1 minute". Ships with the vendor's `demo` key, which
  *    serves a handful of symbols; `?apikey=` replaces it.
@@ -20,6 +25,7 @@
 import { TIMEFRAME_MS, TIMEFRAMES, type Bar, type Timeframe } from '../data/types.js';
 import { resolveAcross, resolveTimeframe, type Resolution } from './resolve.js';
 import { resample } from '../data/agg/resample.js';
+import { createYahooProvider } from './yahooFinance.js';
 import { createTwelveDataProvider } from './twelveData.js';
 import { createAlphaVantageProvider } from './alphaVantage.js';
 import { createBundledProvider } from './bundled.js';
@@ -95,6 +101,15 @@ export interface MarketDataOptions {
    * error — precisely the lying-button problem this layer exists to remove.
    */
   readonly only?: readonly MarketDataProvider[];
+  /**
+   * Put Yahoo Finance at the head of the chain.
+   *
+   * Only true where a same-origin proxy is actually serving `/yahoo` — the dev server, or
+   * a host the reader has configured themselves. Off by default because the published
+   * artifact and any plain static build have no such route, and a provider that claims six
+   * timeframes it cannot fetch is worse than one that is absent.
+   */
+  readonly yahoo?: boolean;
   /** Off in tests, so nothing touches `localStorage`. */
   readonly persist?: boolean;
 }
@@ -112,6 +127,7 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
       ? [...options.only]
       : [
           ...(options.extra ?? []),
+          ...(options.yahoo === true ? [wrap(createYahooProvider({ ready: true }))] : []),
           wrap(
             createTwelveDataProvider(
               options.twelveDataKey === undefined ? {} : { apiKey: options.twelveDataKey },
