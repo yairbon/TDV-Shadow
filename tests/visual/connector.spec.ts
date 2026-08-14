@@ -261,7 +261,11 @@ test.describe('the data panel', () => {
     // since with no runtime there is nothing to cut it short.
     await open(page);
     await page.waitForTimeout(4500);
-    expect(await openPanel(page)).toContain('not published');
+    const text = await openPanel(page);
+    expect(text).toContain('no claude.ai runtime');
+    // …and says so as a fact, not a fault: this is the ordinary state everywhere except a
+    // published page, and flagging it red teaches the reader to skip the line that matters.
+    expect(text).toContain('normal outside a published artifact');
   });
 
   test('says when the runtime is present but the capability was not granted', async ({ page }) => {
