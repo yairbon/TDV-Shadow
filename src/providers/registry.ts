@@ -1,0 +1,234 @@
+/**
+ * The provider chain the app actually talks to.
+ *
+ * Assembles, in preference order:
+ *
+ * 1. **Twelve Data** — the only free source verified to serve 1m/5m/1h/1d over CORS, so
+ *    it is the one that answers "live 1 minute". Ships with the vendor's `demo` key, which
+ *    serves a handful of symbols; `?apikey=` replaces it.
+ * 2. **Alpha Vantage** — daily only on a free key, and present because it is the provider
+ *    reachable from inside the published artifact through the viewer's connector.
+ * 3. **Bundled** — the CSVs baked into the build. Not a fallback for convenience: the
+ *    published artifact has no network at all, so without this the chart there would be
+ *    permanently empty. It is also what makes the app work offline.
+ *
+ * Order matters and is by capability, not by preference alone: `resolveAcross` takes a
+ * native resolution wherever it lives, so daily comes from whichever provider serves it
+ * and intraday comes from the one that can.
+ */
+
+import { TIMEFRAME_MS, TIMEFRAMES, type Bar, type Timeframe } from '../data/types.js';
+import { resolveAcross, type Resolution } from './resolve.js';
+import { resample } from '../data/agg/resample.js';
+import { createTwelveDataProvider } from './twelveData.js';
+import { createAlphaVantageProvider } from './alphaVantage.js';
+import { createBundledProvider } from './bundled.js';
+import { browserCacheStore, withCache } from './cache.js';
+import {
+  fail,
+  ok,
+  type MarketDataProvider,
+  type ProviderCapabilities,
+  type ProviderResult,
+  type Quote,
+  type SymbolHit,
+} from './types.js';
+
+/** A resolved series, with everything the UI needs to describe it honestly. */
+export interface LoadedSeries {
+  readonly bars: readonly Bar[];
+  readonly timeframe: Timeframe;
+  /** Which provider answered, for the status line. */
+  readonly provider: string;
+  readonly origin: Resolution['origin'];
+  /** True when this came from cache after a live fetch failed. */
+  readonly stale: boolean;
+}
+
+export interface MarketData {
+  /** Every timeframe, resolved against the chain — for building the buttons. */
+  timeframes(): readonly (Resolution & { readonly provider: string | null })[];
+  series(symbol: string, timeframe: Timeframe, limit?: number): Promise<ProviderResult<LoadedSeries>>;
+  search(query: string): Promise<ProviderResult<readonly SymbolHit[]>>;
+  quote(symbol: string): Promise<ProviderResult<Quote>>;
+  /** The chain, for diagnostics and for the settings sheet. */
+  providers(): readonly ProviderCapabilities[];
+}
+
+export interface MarketDataOptions {
+  readonly twelveDataKey?: string;
+  readonly alphaVantageKey?: string;
+  /** Extra providers, ahead of the built-in ones. The MCP provider arrives this way. */
+  readonly extra?: readonly MarketDataProvider[];
+  /**
+   * Replaces the built-in chain entirely.
+   *
+   * Needed for the published artifact, not just for tests: there, no outbound HTTP is
+   * possible, so leaving the REST providers in the chain would have them claim every
+   * timeframe natively, light up all six buttons, and fail on each press with a network
+   * error — precisely the lying-button problem this layer exists to remove.
+   */
+  readonly only?: readonly MarketDataProvider[];
+  /** Off in tests, so nothing touches `localStorage`. */
+  readonly persist?: boolean;
+}
+
+/** How many bars to ask for when the caller does not say. */
+const DEFAULT_LIMIT = 500;
+
+export function createMarketData(options: MarketDataOptions = {}): MarketData {
+  const store = options.persist === false ? undefined : browserCacheStore();
+  const wrap = (provider: MarketDataProvider): MarketDataProvider =>
+    withCache(provider, store === undefined ? {} : { store });
+
+  const chain: MarketDataProvider[] =
+    options.only !== undefined
+      ? [...options.only]
+      : [
+          ...(options.extra ?? []),
+          wrap(
+            createTwelveDataProvider(
+              options.twelveDataKey === undefined ? {} : { apiKey: options.twelveDataKey },
+            ),
+          ),
+          wrap(
+            createAlphaVantageProvider(
+              options.alphaVantageKey === undefined ? {} : { apiKey: options.alphaVantageKey },
+            ),
+          ),
+          // Last, and never removed: the only provider that works with no network at all.
+          createBundledProvider(),
+        ];
+
+  const capabilities = (): ProviderCapabilities[] => chain.map((p) => p.capabilities());
+
+  /**
+   * The provider that should answer for a timeframe, and how.
+   *
+   * Resolved by POSITION rather than by looking the capability's id back up: two providers
+   * can legitimately share an id — an MCP and a REST Alpha Vantage are both
+   * `alpha-vantage` — and a map keyed by id silently hands the request to whichever was
+   * inserted last, which is a different provider from the one whose capabilities were
+   * consulted.
+   */
+  const pick = (
+    timeframe: Timeframe,
+  ): { provider: MarketDataProvider; capability: ProviderCapabilities; resolution: Resolution } | null => {
+    const caps = capabilities();
+    const chosen = resolveAcross(caps, timeframe);
+    if (chosen === null) return null;
+    const index = caps.indexOf(chosen.provider);
+    const provider = chain.at(index);
+    if (provider === undefined) return null;
+    return { provider, capability: chosen.provider, resolution: chosen.resolution };
+  };
+
+  return {
+    providers: capabilities,
+
+    timeframes() {
+      const caps = capabilities();
+      const seen = new Set<Timeframe>();
+      const out: (Resolution & { provider: string | null })[] = [];
+      for (const timeframe of TIMEFRAMES) {
+        if (seen.has(timeframe)) continue;
+        seen.add(timeframe);
+        const chosen = resolveAcross(caps, timeframe);
+        if (chosen === null) {
+          // No provider can serve it. The reason comes from whichever provider is ready,
+          // so the button says something specific rather than a generic refusal.
+          const ready = caps.find((candidate) => candidate.ready) ?? caps.at(0);
+          out.push({
+            timeframe,
+            origin: 'unavailable',
+            fetchAs: timeframe,
+            reason:
+              ready === undefined
+                ? 'no data provider is configured'
+                : resolveAcross([{ ...ready, ready: true }], timeframe)?.resolution.reason ??
+                  `${ready.label} does not serve ${timeframe}`,
+            provider: null,
+          });
+          continue;
+        }
+        out.push({ ...chosen.resolution, provider: chosen.provider.label });
+      }
+      return out;
+    },
+
+    async series(symbol, timeframe, limit = DEFAULT_LIMIT) {
+      const chosen = pick(timeframe);
+      if (chosen === null) {
+        return fail('entitlement', `no configured provider serves ${timeframe}`);
+      }
+      const { provider, resolution } = chosen;
+      // A resampled target needs proportionally more source bars, or the roll-up produces
+      // a handful of buckets from a full request.
+      const factor =
+        resolution.origin === 'resampled'
+          ? Math.max(1, Math.round(TIMEFRAME_MS[timeframe] / TIMEFRAME_MS[resolution.fetchAs]))
+          : 1;
+      const page = await provider.fetchSeries(symbol, resolution.fetchAs, limit * factor);
+      if (!page.ok) return page;
+
+      const bars =
+        resolution.origin === 'resampled'
+          ? resample(page.value.bars, resolution.fetchAs, timeframe)
+          : page.value.bars;
+      if (bars.length === 0) return fail('not-found', `no ${timeframe} bars for ${symbol}`);
+
+      return ok({
+        bars,
+        timeframe,
+        provider: chosen.capability.label,
+        origin: resolution.origin,
+        // `withCache` reports staleness on its own richer method; through the plain
+        // interface a served-from-stale result is indistinguishable, so this is only
+        // true when the provider itself said so.
+        stale: false,
+      });
+    },
+
+    async search(query) {
+      const trimmed = query.trim();
+      if (trimmed === '') return ok([]);
+      // Every provider that can search, merged — Twelve Data covers more venues, Alpha
+      // Vantage sometimes has a name the other misses. Duplicates are collapsed by
+      // (symbol, exchange), which is the pair that identifies an instrument.
+      const searchable = chain.filter((provider) => provider.capabilities().canSearch);
+      const results = await Promise.all(searchable.map((provider) => provider.searchSymbols(trimmed)));
+
+      const merged: SymbolHit[] = [];
+      const seen = new Set<string>();
+      let lastFailure: ProviderResult<readonly SymbolHit[]> | null = null;
+      for (const result of results) {
+        if (!result.ok) {
+          lastFailure = result;
+          continue;
+        }
+        for (const hit of result.value) {
+          const key = `${hit.symbol}@${hit.exchange}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(hit);
+        }
+      }
+      if (merged.length === 0 && lastFailure !== null) return lastFailure;
+      return ok(merged);
+    },
+
+    async quote(symbol) {
+      for (const provider of chain) {
+        const caps = provider.capabilities();
+        if (!caps.ready || !caps.canQuote) continue;
+        const result = await provider.fetchQuote(symbol);
+        if (result.ok) return result;
+        // A `not-found` here means this provider does not carry the symbol; the next one
+        // might. Anything else is a real problem worth reporting rather than papering
+        // over by trying every provider in turn.
+        if (result.kind !== 'not-found') return result;
+      }
+      return fail('not-found', `no provider quoted ${symbol}`);
+    },
+  };
+}
