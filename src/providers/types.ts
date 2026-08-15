@@ -95,6 +95,15 @@ export interface Quote {
   readonly time: TimeMs;
   /** Null when the provider does not say, which is not the same as "closed". */
   readonly marketOpen: boolean | null;
+  /**
+   * The previous session's close, when the provider sends one.
+   *
+   * Every quote endpoint here carries it and this app used to throw it away, so a
+   * percentage change had to be derived from whatever bars happened to be on the chart —
+   * which meant no change at all for any instrument that was not the one being charted.
+   * It is the baseline a quote is quoted AGAINST, so it belongs with the quote.
+   */
+  readonly previousClose: number | null;
 }
 
 export interface ProviderCapabilities {

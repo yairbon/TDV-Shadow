@@ -139,7 +139,9 @@ export function parseSearchRows(csv: string): SymbolHit[] {
 }
 
 /** Parses `GLOBAL_QUOTE`'s CSV: symbol,open,high,low,price,volume,latestDay,… */
-export function parseQuoteRow(csv: string): { symbol: string; price: number; day: string } | null {
+export function parseQuoteRow(
+  csv: string,
+): { symbol: string; price: number; day: string; previousClose: number | null } | null {
   const lines = csv.trim().split('\n');
   for (const line of lines) {
     const row = line.trim();
@@ -148,7 +150,15 @@ export function parseQuoteRow(csv: string): { symbol: string; price: number; day
     if (cells.length < 7) continue;
     const price = Number(cells[4]);
     if (!Number.isFinite(price)) return null;
-    return { symbol: cells[0], price, day: cells[6] };
+    // `symbol,open,high,low,price,volume,latestDay,previousClose,…` — column 7, present on
+    // every GLOBAL_QUOTE row observed, but the row is still served without it.
+    const previous = cells.length > 7 ? Number(cells[7]) : Number.NaN;
+    return {
+      symbol: cells[0],
+      price,
+      day: cells[6],
+      previousClose: Number.isFinite(previous) && previous > 0 ? previous : null,
+    };
   }
   return null;
 }
@@ -244,6 +254,7 @@ export function createAlphaVantageCore(
       return ok({
         symbol: row.symbol === '' ? ticker : row.symbol,
         price: row.price,
+        previousClose: row.previousClose,
         time: (time ?? Date.now()) as Quote['time'],
         // GLOBAL_QUOTE says nothing about whether the venue is open, and guessing from the
         // date would call a holiday "open" every time the previous session was recent.

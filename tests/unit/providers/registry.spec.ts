@@ -59,7 +59,9 @@ function stub(
         );
       },
       fetchQuote(symbol) {
-        return Promise.resolve(ok({ symbol, price: 100, time: 1 as never, marketOpen: true }));
+        return Promise.resolve(
+          ok({ symbol, price: 100, time: 1 as never, marketOpen: true, previousClose: null }),
+        );
       },
     },
   };

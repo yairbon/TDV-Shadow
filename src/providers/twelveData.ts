@@ -238,8 +238,10 @@ export function createTwelveDataProvider(options: TwelveDataOptions = {}): Marke
       const seconds = num(row['timestamp']);
       const time = Number.isFinite(seconds) ? Math.round(seconds) * 1000 : Date.now();
 
+      const baseline = num(row['previous_close']);
       return ok({
         symbol: ticker,
+        previousClose: Number.isFinite(baseline) && baseline > 0 ? baseline : null,
         price,
         time: time as Quote['time'],
         marketOpen: typeof row['is_market_open'] === 'boolean' ? row['is_market_open'] : null,

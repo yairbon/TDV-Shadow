@@ -35,6 +35,13 @@ Yahoo's endpoint is unofficial and can change without notice. That is why it sit
 the chain rather than alone: when it breaks, the request falls through to the keyed
 providers and then to the bundled files, instead of the chart going blank.
 
+## Watchlist
+
+The **List** button in the toolbar opens a column of symbols with live prices and the day's
+change. Click a row to chart it; type a ticker to add one; hover a row for the ×. The list
+is remembered across reloads — the prices are not, because a stored price is wrong the
+moment it is read back.
+
 ## Using it on a phone or tablet
 
 **Over your own Wi-Fi**, with nothing to deploy:

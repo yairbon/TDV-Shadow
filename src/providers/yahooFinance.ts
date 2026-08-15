@@ -124,6 +124,8 @@ interface ChartResult {
   readonly meta?: {
     readonly regularMarketTime?: number;
     readonly regularMarketPrice?: number;
+    readonly chartPreviousClose?: number;
+    readonly previousClose?: number;
     readonly currency?: string;
     readonly currentTradingPeriod?: {
       readonly regular?: { readonly start?: number; readonly end?: number };
@@ -356,8 +358,13 @@ export function createYahooProvider(options: YahooOptions): MarketDataProvider {
           ? null
           : nowSeconds >= period.start && nowSeconds < period.end;
 
+      // `chartPreviousClose` is the baseline Yahoo itself uses for the day's change;
+      // `previousClose` is its fallback on payloads that omit the first.
+      const baseline = meta?.chartPreviousClose ?? meta?.previousClose;
       return ok({
         symbol: ticker,
+        previousClose:
+          baseline !== undefined && Number.isFinite(baseline) && baseline > 0 ? baseline : null,
         // Epoch SECONDS on the wire. Read as milliseconds it lands in 1970 and the live bar
         // is appended half a century early.
         time: (seconds === undefined ? now() : Math.round(seconds) * 1000) as Quote['time'],

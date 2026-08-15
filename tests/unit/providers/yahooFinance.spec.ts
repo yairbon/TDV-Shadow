@@ -35,6 +35,7 @@ const MINUTE_CHART = {
           exchangeTimezoneName: 'America/New_York',
           regularMarketTime: 1786727423,
           regularMarketPrice: 1827.58,
+          chartPreviousClose: 1800,
           currentTradingPeriod: { regular: { start: 1786714200, end: 1786737600 } },
           validRanges: ['1d', '5d', '1mo', '1y', 'max'],
         },
@@ -245,6 +246,24 @@ describe('quoting', () => {
     const result = await market.fetchQuote('ASML');
     if (!result.ok) throw new Error(result.reason);
     expect(result.value.time).toBe(1786727423_000);
+  });
+
+  it('carries the previous close, so a change can be computed without more requests', async () => {
+    // The number is in every payload and used to be thrown away, which left the percentage
+    // derivable only for whichever instrument happened to be on the chart.
+    const { market } = provider(MINUTE_CHART);
+    const result = await market.fetchQuote('ASML');
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.previousClose).toBe(1800);
+  });
+
+  it('reports no baseline rather than a wrong one when Yahoo omits it', async () => {
+    const payload = clone(MINUTE_CHART);
+    delete (payload.chart.result[0].meta as { chartPreviousClose?: unknown }).chartPreviousClose;
+    const { market } = provider(payload);
+    const result = await market.fetchQuote('ASML');
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.previousClose).toBeNull();
   });
 
   it('says the market is open when the clock is inside the session', async () => {

@@ -31,6 +31,7 @@ const quote = (price: number, at: number = OPEN + 1000): Quote => ({
   price,
   time: at as TimeMs,
   marketOpen: true,
+  previousClose: null,
 });
 
 describe('a quote inside the current bar', () => {

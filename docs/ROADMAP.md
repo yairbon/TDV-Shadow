@@ -424,6 +424,42 @@ All three now derive from the registry, and a test walks it rather than naming i
   breaks, and `ready` is passed in rather than sniffed so a build with no proxy does not
   light up six buttons it cannot serve.
 
+- **Closing the gap to TradingView: a watchlist, and the timeframe that was never on screen.**
+
+  Two things, found by looking at the app rather than at the code.
+
+  **`4h` had no button.** It was in `TIMEFRAMES`, resolvable by the provider chain, and
+  served natively by Yahoo with session-aligned buckets — and completely unreachable,
+  because the toolbar built its buttons from a second hand-written list that had five
+  entries instead of six. That is the same defect this document already records three
+  times, in the pane allocator, the MCP server and `resolveToken`. The buttons are derived
+  from `DATA_TIMEFRAMES` now, with a label map beside it: a missing key degrades to the
+  timeframe's own name, where a missing array entry vanished silently.
+
+  **A watchlist**, the most recognisable thing TradingView has that this did not. A column
+  of symbols with live prices and a percentage, one click to chart any of them. The rules —
+  membership, ordering, which price belongs to which row — are pure and unit-tested in
+  `app/watchlist.ts`; the panel only draws. Three decisions worth recording:
+
+  - It is a **sibling of the chart in the flex layout, not an overlay**. Overlaid, it would
+    sit on the canvas the crosshair needs, and the chart would keep sizing itself as though
+    the panel were not there.
+  - Quotes are held **beside** the symbols rather than inside them, and a quote for an
+    unlisted symbol is refused. Requests are in flight while the list is being edited, and a
+    late answer would otherwise resurrect a row the reader had just deleted.
+  - Only membership is persisted. A stored price is wrong the moment it is read back.
+
+  This turned up something the provider layer had been discarding all along: **every quote
+  endpoint sends the previous close**, and none of the adapters kept it. Without it a
+  percentage could only be derived from the bars already on the chart — which meant a change
+  column that was empty for every instrument except the one being charted. `Quote` carries
+  `previousClose` now, and all four adapters populate it.
+
+  Two smaller things the browser caught that no unit test would have: the panel's markup
+  landed outside `#body` with unbalanced `div`s, and the block's `const` was read by
+  `syncSymbolChrome` during boot before it was initialised — a temporal-dead-zone error that
+  killed the whole module, silently, leaving a page that looked fine but had no watchlist.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

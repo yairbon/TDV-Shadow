@@ -33,6 +33,16 @@ import { createDrawingDialog } from './ui/drawingDialog.js';
 import { createToolbarOverflow } from './ui/toolbarOverflow.js';
 import { createObjectTree, type ObjectRow } from './ui/objectTree.js';
 import { createToolRail, type ToolGroup } from './ui/toolRail.js';
+import { createWatchlistPanel } from './ui/watchlistPanel.js';
+import {
+  addSymbol as watchAdd,
+  applyQuote as watchQuote,
+  fromStorage as watchFromStorage,
+  removeSymbol as watchRemove,
+  rowsOf as watchRows,
+  toStorage as watchToStorage,
+  type WatchlistState,
+} from './app/watchlist.js';
 import { deleteLayout, listLayouts, loadLayout, saveLayout } from './app/workspace.js';
 import { createTextPrompt } from './ui/prompt.js';
 import { searchSymbols, type MatchRange } from './app/symbolSearch.js';
@@ -356,6 +366,139 @@ let symbol = params.get('sym') ?? savedPane?.symbol ?? 'DEMO';
 let loaded = loadSymbol(symbol);
 let tf: Timeframe = savedPane?.timeframe ?? loaded.timeframe;
 let bars: Bar[] = loaded.bars;
+
+// ---------------------------------------------------------------- watchlist
+
+/**
+ * The watchlist: a column of symbols with live prices, and one click to chart any of them.
+ *
+ * The most recognisable thing TradingView has that this did not. It is deliberately thin —
+ * every rule about membership, ordering and which price belongs to which row lives in
+ * `app/watchlist.ts`, and the panel only draws. What is left here is the wiring: persistence,
+ * polling, and turning a picked row into a chart load.
+ */
+const WATCHLIST_KEY = 'tdv-shadow.watchlist';
+
+/**
+ * How often the listed symbols are repriced.
+ *
+ * Slower than the chart's own quote poll, and for a reason: this fans out over every row, so
+ * a 5-symbol list at the chart's 25-second cadence would spend twelve requests a minute on
+ * prices nobody is looking at closely. A metered key would be gone before lunch.
+ */
+const WATCHLIST_POLL_MS = 60_000;
+
+let watchlist: WatchlistState = watchFromStorage(readWatchlist());
+let watchTimer: number | null = null;
+let watchPending = false;
+
+function readWatchlist(): unknown {
+  try {
+    const raw = localStorage.getItem(WATCHLIST_KEY);
+    return raw === null ? null : (JSON.parse(raw) as unknown);
+  } catch {
+    // A corrupt or unreadable entry is not a reason to fail the boot; the defaults stand.
+    return null;
+  }
+}
+
+function saveWatchlist(): void {
+  try {
+    localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchToStorage(watchlist)));
+  } catch {
+    // Private mode and quota failures are swallowed, as everywhere else this app stores.
+  }
+}
+
+const watchlistHost = el('#watchlist');
+const watchlistInput = inp('#watchlist-input');
+const watchlistRows = el('#watchlist-rows');
+
+const watchPanel =
+  watchlistHost !== null && watchlistInput !== null && watchlistRows !== null
+    ? createWatchlistPanel(watchlistHost, watchlistInput, watchlistRows, {
+        onPick: (symbol) => {
+          void loadTicker(symbol);
+        },
+        onAdd: (symbol) => {
+          watchlist = watchAdd(watchlist, symbol);
+          saveWatchlist();
+          drawWatchlist();
+          void pollWatchlist();
+        },
+        onRemove: (symbol) => {
+          watchlist = watchRemove(watchlist, symbol);
+          saveWatchlist();
+          drawWatchlist();
+        },
+        onClose: () => {
+          setWatchlistOpen(false);
+        },
+      })
+    : null;
+
+function drawWatchlist(): void {
+  watchPanel?.render(watchRows(watchlist, symbol));
+}
+
+function setWatchlistOpen(open: boolean): void {
+  watchPanel?.setOpen(open);
+  btn('#watchlist-toggle')?.setAttribute('aria-pressed', String(open));
+  if (watchTimer !== null) {
+    window.clearInterval(watchTimer);
+    watchTimer = null;
+  }
+  if (!open) return;
+  drawWatchlist();
+  // Repricing a panel nobody is looking at is the one cost worth avoiding outright, so the
+  // timer lives and dies with the panel rather than running for the session.
+  watchTimer = window.setInterval(() => void pollWatchlist(), WATCHLIST_POLL_MS);
+  void pollWatchlist();
+}
+
+/**
+ * Reprices every listed symbol, one at a time.
+ *
+ * Sequential rather than parallel: a free key's per-minute allowance is small, and five
+ * simultaneous requests is exactly the burst that trips it. The panel is redrawn after each
+ * answer so prices fill in as they arrive instead of all at once at the end.
+ */
+async function pollWatchlist(): Promise<void> {
+  if (watchPending || watchPanel === null || !watchPanel.isOpen()) return;
+  watchPending = true;
+  try {
+    for (const listed of [...watchlist.symbols]) {
+      // The list can be edited while this loop runs; a symbol removed mid-flight must not
+      // be re-fetched, and `watchQuote` refuses to record it in any case.
+      if (!watchlist.symbols.includes(listed)) continue;
+      const result = await market.quote(listed);
+      if (!result.ok) continue;
+      watchlist = watchQuote(watchlist, result.value);
+      drawWatchlist();
+    }
+  } finally {
+    watchPending = false;
+  }
+}
+
+el('#watchlist-toggle')?.addEventListener('click', () => {
+  setWatchlistOpen(watchPanel === null ? false : !watchPanel.isOpen());
+});
+el('#watchlist-close')?.addEventListener('click', () => {
+  setWatchlistOpen(false);
+});
+el('#watchlist-add')?.addEventListener('click', () => {
+  const value = watchlistInput?.value ?? '';
+  if (value.trim() === '') return;
+  if (watchlistInput !== null) watchlistInput.value = '';
+  watchlist = watchAdd(watchlist, value);
+  saveWatchlist();
+  drawWatchlist();
+  void pollWatchlist();
+});
+
+drawWatchlist();
+
 if (savedPane !== null && loaded.base !== null && savedPane.timeframe !== '1m') {
   const resampled = [...resample(loaded.base, '1m', savedPane.timeframe)];
   if (resampled.length > 0) bars = resampled;
@@ -1018,6 +1161,9 @@ function syncSymbolChrome(): void {
   if (name !== null) name.textContent = symbol;
   const picker = sel('#symbol-pick');
   if (picker !== null) picker.value = symbol;
+  // The active row follows the chart, so picking a symbol anywhere — the search dialog,
+  // the ticker box, another pane — highlights it in the list too.
+  drawWatchlist();
   const liveButton = btn('#live-toggle');
   if (liveButton !== null) {
     const live = liveAvailability();
@@ -1220,24 +1366,31 @@ symbolInput?.addEventListener('keydown', (event) => {
  * history cannot be resampled UP to an intraday bar — the information is not there — so
  * those buttons are disabled rather than silently showing the wrong thing.
  */
-const TIMEFRAMES: readonly { readonly tf: Timeframe; readonly label: string }[] = [
-  { tf: '1m', label: '1m' },
-  { tf: '5m', label: '5m' },
-  { tf: '15m', label: '15m' },
-  { tf: '1h', label: '1H' },
-  { tf: '1d', label: '1D' },
-];
+/**
+ * How each timeframe is written on its button. Presentation only.
+ *
+ * The LIST of buttons is not here — it is `DATA_TIMEFRAMES`, walked below. A second list
+ * naming the timeframes is exactly the defect this repo has already paid for three times:
+ * `4h` was in the data layer, resolvable by the provider chain, and served natively by
+ * Yahoo, yet had no button, so a timeframe the app fully supported was unreachable. A map
+ * with a missing key degrades to the timeframe's own name; a missing array entry vanishes.
+ */
+const TIMEFRAME_LABELS: Readonly<Partial<Record<Timeframe, string>>> = Object.freeze({
+  '1h': '1H',
+  '4h': '4H',
+  '1d': '1D',
+});
 
 const timeframeHost = el('#timeframes');
 if (timeframeHost !== null) {
-  for (const entry of TIMEFRAMES) {
+  for (const value of DATA_TIMEFRAMES) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'tb tf';
-    button.dataset['tf'] = entry.tf;
-    button.textContent = entry.label;
+    button.dataset['tf'] = value;
+    button.textContent = TIMEFRAME_LABELS[value] ?? value;
     button.addEventListener('click', () => {
-      setTimeframe(entry.tf);
+      setTimeframe(value);
     });
     timeframeHost.append(button);
   }
