@@ -495,6 +495,14 @@ All three now derive from the registry, and a test walks it rather than naming i
   deadline, so the outcome always arrives. Both early returns release it too; one of them
   would otherwise have pinned the line forever.
 
+  The full run then failed one existing test, and the failure was worth reading rather than
+  patching: "the counters come back once the message has had its turn" had been measuring
+  how long an unreachable host takes to fail — a property of the sandbox, not the app, and
+  one now bounded by the provider deadline, so the load could outlast any wait the test
+  picked. Both tests in that group refuse at the vendor now, which makes the outcome
+  immediate AND lets them assert the actual reason instead of merely that the word
+  "loading" is on screen.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

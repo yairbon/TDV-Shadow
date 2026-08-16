@@ -221,26 +221,59 @@ test.describe('state ownership across a symbol change', () => {
 });
 
 test.describe('the status line reports what happened', () => {
+  /**
+   * Every vendor refuses at once.
+   *
+   * Without this the test measured how long an unreachable host takes to fail, which is a
+   * property of the sandbox rather than of the app — and it is now bounded by the provider
+   * deadline, so the whole load could outlast any wait the test picked. Refusing
+   * immediately makes the outcome deterministic AND lets these assert the real reason
+   * rather than merely that the word "loading" is on screen.
+   */
+  const refuseEverything = async (page: Page): Promise<void> => {
+    for (const host of ['https://api.twelvedata.com/**', 'https://www.alphavantage.co/**']) {
+      await page.route(host, (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ code: 404, message: 'symbol not found', status: 'error' }),
+        }),
+      );
+    }
+  };
+
   test('an unloadable ticker says why instead of going quiet', async ({ page }) => {
     // `status()` runs on a 1s interval and overwrote the message, so pressing Load on an
     // unlisted ticker looked like the button did nothing at all.
+    await refuseEverything(page);
     await open(page);
     await fillControl(page, '#symbol-input', 'GOOG');
     await clickControl(page, '#symbol-load');
-    await page.waitForTimeout(1500);
+    await page.waitForFunction(
+      () => !(document.querySelector('#status')?.textContent ?? '').includes('loading'),
+      undefined,
+      { timeout: 20_000 },
+    );
 
     const text = (await page.textContent('#status')) ?? '';
     expect(text).toContain('GOOG');
+    // The REASON, not just the ticker echoed back inside "loading GOOG…".
+    expect(text).not.toContain('loading');
     // Whatever the reason is, it must not have been replaced by the idle counters.
     expect(text).not.toMatch(/^\d+ indicator/);
   });
 
   test('the counters come back once the message has had its turn', async ({ page }) => {
     // The hold must expire, or the first transient message pins the line forever.
+    await refuseEverything(page);
     await open(page);
     await fillControl(page, '#symbol-input', 'GOOG');
     await clickControl(page, '#symbol-load');
-    await page.waitForTimeout(1000);
+    await page.waitForFunction(
+      () => !(document.querySelector('#status')?.textContent ?? '').includes('loading'),
+      undefined,
+      { timeout: 20_000 },
+    );
     expect((await page.textContent('#status')) ?? '').toContain('GOOG');
 
     await page.waitForTimeout(7000);
