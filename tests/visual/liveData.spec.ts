@@ -353,6 +353,61 @@ test.describe('loading real intraday data', () => {
   });
 });
 
+test.describe('the status line while a request is in flight', () => {
+  test('never lets the counters reclaim the line before the answer arrives', async ({ page }) => {
+    // A timed hold is a clock racing a network. Loading a symbol no provider carries took
+    // about ten seconds to resolve while the "loading…" message expired after six, so the
+    // counters came back — the chart looked settled — and a failure appeared out of nowhere
+    // seconds later. Here the provider answers deliberately later than any such hold.
+    await page.route('https://api.twelvedata.com/**', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 8000));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 404, message: 'symbol not found', status: 'error' }),
+      });
+    });
+    await open(page);
+    await page.evaluate(() => {
+      const input = document.querySelector<HTMLInputElement>('#symbol-input');
+      if (input !== null) input.value = 'ZZZZZZ';
+      document.querySelector<HTMLButtonElement>('#symbol-load')?.click();
+    });
+
+    // Well past the old six-second hold, and still before the provider answers.
+    await page.waitForTimeout(7000);
+    expect(await page.textContent('#status')).toContain('loading');
+
+    // The outcome lands, and only then do the counters return.
+    await page.waitForFunction(
+      () => !(document.querySelector('#status')?.textContent ?? '').includes('loading'),
+      undefined,
+      { timeout: 20_000 },
+    );
+    expect(await page.textContent('#status')).toContain('ZZZZZZ');
+  });
+
+  test('releases the line when the answer is for a symbol the user has left', async ({ page }) => {
+    // The hold is a flag, so a path that returns early without reporting would pin the
+    // status line forever.
+    await stubProviders(page);
+    await open(page);
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('AAPL');
+    });
+    await page.waitForTimeout(600);
+    await page.click('#timeframes button[data-tf="1m"]');
+    await page.evaluate(() => {
+      (window as unknown as { __tdv: { setSymbol: (s: string) => void } }).__tdv.setSymbol('DEMO');
+    });
+    await page.waitForFunction(
+      () => /indicator|drawing/.test(document.querySelector('#status')?.textContent ?? ''),
+      undefined,
+      { timeout: 20_000 },
+    );
+  });
+});
+
 test.describe('searching every venue, not just the bundled list', () => {
   const openDialog = async (page: Page): Promise<void> => {
     await page.click('#symbol-button');

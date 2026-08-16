@@ -34,7 +34,6 @@ import {
 /** `WebSocket.readyState` values (the spec's constants, restated locally). */
 export const WS_CONNECTING = 0;
 export const WS_OPEN = 1;
-export const WS_CLOSING = 2;
 export const WS_CLOSED = 3;
 
 /**

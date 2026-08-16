@@ -62,14 +62,21 @@ const INTERVAL: Readonly<Record<Timeframe, string>> = Object.freeze({
   '1d': '1d',
 });
 
-const YAHOO_TIMEFRAMES: readonly Timeframe[] = Object.freeze<Timeframe[]>([
-  '1m',
-  '5m',
-  '15m',
-  '1h',
-  '4h',
-  '1d',
-]);
+/**
+ * Derived from `INTERVAL`, not written out again.
+ *
+ * Two lists in one module that must agree is a smaller version of the same trap: adding an
+ * interval to the map and forgetting the array would leave the provider quietly refusing to
+ * CLAIM a timeframe it can perfectly well fetch. `INTERVAL` is a `Record<Timeframe, …>`, so
+ * the compiler already forces it to stay exhaustive — which makes it the honest source.
+ *
+ * This stays a claim about what YAHOO serves rather than a restatement of `TIMEFRAMES`: a
+ * provider that auto-claimed every timeframe the app invents is the lying-capability bug
+ * this layer exists to prevent.
+ */
+const YAHOO_TIMEFRAMES: readonly Timeframe[] = Object.freeze(
+  Object.keys(INTERVAL) as Timeframe[],
+);
 
 /**
  * Ranges Yahoo actually accepts per interval, smallest first, with the bars each yields.

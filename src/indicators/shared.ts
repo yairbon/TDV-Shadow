@@ -279,14 +279,3 @@ export function leadingNaNCount(values: Float64Array): number {
   while (count < values.length && Number.isNaN(values[count])) count += 1;
   return count;
 }
-
-/**
- * Widens a degenerate price range so downstream division is safe, using the same
- * expansion the renderer applies (RENDER_ALGORITHMS §2, SKILL rule 9). Returns the input
- * untouched when the range is already non-degenerate.
- */
-export function expandDegenerateRange(min: number, max: number): readonly [number, number] {
-  if (max - min >= Math.max(Math.abs(max) * 1e-9, 1e-12)) return [min, max];
-  const d = Math.max(Math.abs(max) * 1e-4, 1e-8);
-  return [min - d, max + d];
-}

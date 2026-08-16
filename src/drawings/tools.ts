@@ -129,7 +129,3 @@ export const TOOL_DEFINITIONS: Readonly<Record<DrawingKind, ToolDefinition>> = O
   }),
 });
 
-/** Anchors required before a drawing of `kind` is complete. */
-export function anchorCountFor(kind: DrawingKind): number {
-  return TOOL_DEFINITIONS[kind].anchorCount;
-}

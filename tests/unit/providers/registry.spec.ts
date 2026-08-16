@@ -204,6 +204,62 @@ describe('falling through the chain', () => {
   });
 });
 
+describe('a provider that never answers', () => {
+  /** A provider whose calls hang forever, as a firewalled or blocked vendor does. */
+  const silent = (): MarketDataProvider => ({
+    ...stub('twelve-data', ['1d']).provider,
+    fetchSeries: () => new Promise(() => {}),
+    fetchQuote: () => new Promise(() => {}),
+  });
+
+  it('does not hang a series load forever', async () => {
+    // The bug this pins: loading a symbol the first provider does not have fell through to
+    // one that never replied, and the status line sat on "loading ZZZZZZ…" indefinitely.
+    vi.useFakeTimers();
+    try {
+      const backup = stub('bundled', ['1d']);
+      const market = createMarketData({ ...noPersist, only: [silent(), backup.provider] });
+      const pending = market.series('AAPL', '1d', 10);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      // It moved on to the next provider rather than waiting on the dead one.
+      if (!result.ok) throw new Error(result.reason);
+      expect(result.value.providerId).toBe('bundled');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a timeout as the reason when nothing else can answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const market = createMarketData({ ...noPersist, only: [silent()] });
+      const pending = market.series('AAPL', '1d', 10);
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await pending;
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toContain('in time');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not hang a quote either', async () => {
+    // The watchlist polls every listed symbol in turn, so one dead provider would stall
+    // every row behind it.
+    vi.useFakeTimers();
+    try {
+      const market = createMarketData({ ...noPersist, only: [silent()] });
+      const pending = market.quote('AAPL');
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await pending).ok).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('picking the provider', () => {
   it('asks the provider whose capabilities were consulted, not one sharing its id', async () => {
     // An MCP and a REST Alpha Vantage are both `alpha-vantage`. Looking the chosen

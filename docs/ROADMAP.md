@@ -460,6 +460,41 @@ All three now derive from the registry, and a test walks it rather than naming i
   `syncSymbolChrome` during boot before it was initialised — a temporal-dead-zone error that
   killed the whole module, silently, leaving a page that looked fine but had no watchlist.
 
+- **A full-project audit.** Read for defects rather than for features, plus a live pass
+  through every chart type and every indicator. Six things came out of it.
+
+  **Dead code, and one piece of it dangerous.** Four exports were declared and referenced
+  nowhere: `WS_CLOSING`, `anchorCountFor` (a one-line wrapper over a field its callers read
+  directly), `getChartTransform`, and — the one worth naming — `expandDegenerateRange`, a
+  SECOND implementation of the §2 degenerate-range guard. `RENDER_ALGORITHMS.md` is
+  normative and the root mandate says not to re-derive it; a second copy of a normative rule
+  is a drift waiting to happen, and this one had already drifted into a different return
+  shape. The live one is `priceScale.expandDegenerate`, applied by `makePriceRange`, which
+  every pane range already goes through.
+
+  **A fifth hand-maintained list.** `PICKABLE_TYPES` in the toolbar enumerated all fourteen
+  chart types — identical in content AND order to `CHART_TYPES`. Same defect as the pane
+  allocator, the MCP server, `resolveToken` and the timeframe buttons. Derived now. A sweep
+  for the same shape across the whole tree found only two others, and both are correct:
+  a provider's `nativeTimeframes` is a claim about what THAT VENDOR serves, and deriving it
+  from our own list would make every provider auto-claim any timeframe the app invents —
+  the lying-capability bug the layer exists to prevent. Yahoo's second list was folded into
+  the type-checked `INTERVAL` record it had to agree with.
+
+  **`series` and `quote` had no deadline.** `search` was given a per-provider timeout when a
+  blocked vendor was found stalling the dialog; the other two paths were left alone. They had
+  the same hole and a worse symptom: loading a symbol no provider carried hung forever,
+  because the first said not-found and the second never replied at all. Every path is bounded
+  now, with a budget per kind — a series is the large payload worth waiting on, a quote is
+  small and re-polled shortly, a search is interactive.
+
+  **The status line raced its own outcome.** A fixed six-second hold against a load that took
+  ten: the counters reclaimed the line, the chart looked settled and unchanged, and then a
+  failure appeared out of nowhere seconds later. It is a flag now, released by the outcome
+  rather than by a clock — which is only safe *because* every provider finally has a
+  deadline, so the outcome always arrives. Both early returns release it too; one of them
+  would otherwise have pinned the line forever.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

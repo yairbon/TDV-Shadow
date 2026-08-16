@@ -57,10 +57,6 @@ const TRANSFORMS: Readonly<Record<ChartType, ChartTypeTransform>> = Object.freez
   range: rangeTransform,
 });
 
-export function getChartTransform(type: ChartType): ChartTypeTransform {
-  return TRANSFORMS[type];
-}
-
 export function applyChartType(
   type: ChartType,
   bars: readonly Bar[],

@@ -118,31 +118,37 @@ export interface MarketDataOptions {
 const DEFAULT_LIMIT = 500;
 
 /**
- * How long one provider may hold up a merged search.
+ * How long one provider may hold up a request, per kind.
  *
- * `Promise.all` waits for the slowest, so a single provider that never answers — blocked
- * by a firewall or an extension, or simply unreachable — stalls the dialog indefinitely
- * while the results that did arrive sit unrendered. Long enough that a slow answer still
- * counts, short enough that the reader is not left watching "searching…".
+ * Every one of these paths awaits a provider, and a provider that never answers is not a
+ * hypothetical: a firewall, an extension blocking a finance domain, or a sandbox with no
+ * egress all produce a promise that simply never settles. Without a deadline the caller
+ * waits forever — the symbol load that prompted this sat on "loading ZZZZZZ…" indefinitely
+ * because the first provider said not-found and the second never replied at all.
+ *
+ * The values differ because the requests do. A series is the largest payload and the one
+ * worth waiting on; a quote is small and is polled again shortly anyway; a search is
+ * interactive and a reader watching a spinner gives up long before three seconds.
  */
-const SEARCH_TIMEOUT_MS = 3000;
+const TIMEOUT_MS = Object.freeze({ series: 10_000, quote: 6000, search: 3000 });
 
-/** Resolves to `promise`, or to a failure once `SEARCH_TIMEOUT_MS` has passed. */
+/** Resolves to `promise`, or to a failure once `ms` has passed. */
 function withTimeout<T>(
   promise: Promise<ProviderResult<T>>,
   label: string,
+  ms: number,
 ): Promise<ProviderResult<T>> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       resolve(fail('network', `${label} did not answer in time`));
-    }, SEARCH_TIMEOUT_MS);
+    }, ms);
     const settle = (result: ProviderResult<T>): void => {
       clearTimeout(timer);
       resolve(result);
     };
     promise.then(settle, (error: unknown) => {
-      // A provider is not supposed to reject, but one that does must not take the merge
-      // down with it — the other providers' hits are still worth showing.
+      // A provider is not supposed to reject, but one that does must not take the caller
+      // down with it — the next provider in the chain may well answer.
       const detail = error instanceof Error ? error.message : 'failed';
       settle(fail('network', `${label}: ${detail}`));
     });
@@ -287,7 +293,11 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
           resolution.origin === 'resampled'
             ? Math.max(1, Math.round(TIMEFRAME_MS[timeframe] / TIMEFRAME_MS[resolution.fetchAs]))
             : 1;
-        const page = await provider.fetchSeries(symbol, resolution.fetchAs, limit * factor);
+        const page = await withTimeout(
+          provider.fetchSeries(symbol, resolution.fetchAs, limit * factor),
+          capability.label,
+          TIMEOUT_MS.series,
+        );
         if (!page.ok) {
           firstFailure ??= page;
           continue;
@@ -338,7 +348,7 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
       });
       const results = await Promise.all(
         searchable.map((provider) =>
-          withTimeout(provider.searchSymbols(trimmed), provider.capabilities().label),
+          withTimeout(provider.searchSymbols(trimmed), provider.capabilities().label, TIMEOUT_MS.search),
         ),
       );
 
@@ -365,7 +375,7 @@ export function createMarketData(options: MarketDataOptions = {}): MarketData {
       for (const provider of chain) {
         const caps = provider.capabilities();
         if (!caps.ready || !caps.canQuote) continue;
-        const result = await provider.fetchQuote(symbol);
+        const result = await withTimeout(provider.fetchQuote(symbol), caps.label, TIMEOUT_MS.quote);
         if (result.ok) return result;
         // A `not-found` here means this provider does not carry the symbol; the next one
         // might. Anything else is a real problem worth reporting rather than papering

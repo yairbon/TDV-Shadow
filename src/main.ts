@@ -57,7 +57,7 @@ import {
   type PriceScaleMode,
   type Timeframe,
 } from './data/types.js';
-import type { ChartType } from './charts/types.js';
+import { CHART_TYPES, type ChartType } from './charts/types.js';
 import { computeIndicator, INDICATOR_IDS } from './indicators/registry.js';
 import type { IndicatorId, IndicatorParams } from './indicators/types.js';
 import type { PlotStyles } from './renderer/layers/annotationsLayer.js';
@@ -1318,7 +1318,7 @@ async function loadTicker(ticker: string): Promise<void> {
     switchSymbol(name);
     return;
   }
-  setStatus(`loading ${name}…`);
+  setPending(`loading ${name}…`);
   // Daily first: it is the timeframe every provider in the chain can serve, so a symbol
   // loads even on a key with no intraday entitlement.
   const result = await market.series(name, '1d');
@@ -1470,13 +1470,17 @@ function setTimeframe(next: Timeframe): void {
  * timeframe with the status line saying what is happening.
  */
 async function fetchTimeframe(forSymbol: string, wanted: Timeframe): Promise<void> {
-  // The default hold, not a long one: the result replaces this message when it lands, and
-  // a request that never lands must not pin the status line for half a minute.
-  setStatus(`loading ${forSymbol} ${wanted}…`);
+  // Held until the outcome rather than for a fixed span: the request can outlast any hold
+  // worth setting, and a fixed one lets the counters return before the answer does.
+  setPending(`loading ${forSymbol} ${wanted}…`);
   const result = await market.series(forSymbol, wanted);
   // The user may have moved on while this was in flight. Applying it now would put one
-  // symbol's bars under another's name.
-  if (forSymbol !== symbol) return;
+  // symbol's bars under another's name — but the hold must still be released, or the line
+  // would sit on a message about a symbol that is no longer on screen, forever.
+  if (forSymbol !== symbol) {
+    awaitingOutcome = false;
+    return;
+  }
   if (!result.ok) {
     noteProviderIssue(`${forSymbol} ${wanted}`, result.reason);
     setStatus(`${forSymbol} ${wanted}: ${result.reason}`);
@@ -1725,33 +1729,18 @@ el('#live-toggle')?.addEventListener('click', () => {
 // ---------------------------------------------------------------- chart type
 
 /**
- * Every chart type is pickable now (10.3).
+ * The chart-type picker is built from `CHART_TYPES` itself.
  *
- * The resampling five — Renko, Kagi, P&F, Line Break, Range — were excluded because they
- * index their own bar space while the axis labelled from the source series. The chart now
- * renders them in that derived space with timestamps resolved back through `sourceIndex`,
- * so there is one index space again and the axis, crosshair and drawings all agree.
+ * It used to be a second array naming all fourteen — identical in content and order, and
+ * therefore a list that could only ever drift. That is the same defect this project has
+ * already paid for in the pane allocator, the MCP server, `resolveToken` and the timeframe
+ * buttons: a type added to the registry and forgotten here would compute, remap and render
+ * correctly while being unreachable from the UI.
  */
-const PICKABLE_TYPES: readonly ChartType[] = [
-  'candles',
-  'hollow-candles',
-  'bars',
-  'line',
-  'area',
-  'baseline',
-  'step-line',
-  'columns',
-  'heikin-ashi',
-  'renko',
-  'kagi',
-  'point-and-figure',
-  'line-break',
-  'range',
-];
 
 const typeSelect = sel('#chart-type');
 if (typeSelect !== null) {
-  for (const type of PICKABLE_TYPES) {
+  for (const type of CHART_TYPES) {
     const option = document.createElement('option');
     option.value = type;
     option.textContent = type.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -2128,12 +2117,33 @@ function writeStatus(text: string): void {
  * armed the hold, the first tick would pin the line forever.
  */
 function setStatus(text: string, holdMs = 6000): void {
+  awaitingOutcome = false;
   writeStatus(text);
   stickyUntil = performance.now() + holdMs;
 }
 
+/**
+ * True while a request is in flight, so the counters cannot reclaim the line before the
+ * answer arrives.
+ *
+ * A timed hold cannot do this job: it is a clock racing a network, and the loser is the
+ * reader. Loading a symbol no provider carries took about ten seconds to resolve while the
+ * "loading…" message expired after six, so the counters came back — the chart looked
+ * settled and unchanged — and then a failure appeared out of nowhere four seconds later.
+ *
+ * A flag is only safe because every provider now has a deadline: the outcome always
+ * arrives, so this is always cleared.
+ */
+let awaitingOutcome = false;
+
+/** Announces work that will report its own outcome. Holds the line until it does. */
+function setPending(text: string): void {
+  writeStatus(text);
+  awaitingOutcome = true;
+}
+
 function status(): void {
-  if (performance.now() < stickyUntil) return;
+  if (awaitingOutcome || performance.now() < stickyUntil) return;
   const indicators = chart?.listIndicators().length ?? 0;
   const shapes = chart?.drawings.list().length ?? 0;
   const armed = chart?.alerts.forSymbol(symbol).filter((a) => !a.triggered).length ?? 0;
