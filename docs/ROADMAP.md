@@ -503,6 +503,54 @@ All three now derive from the registry, and a test walks it rather than naming i
   immediate AND lets them assert the actual reason instead of merely that the word
   "loading" is on screen.
 
+- **The previous session's close.** TradingView keeps a dashed line on it, and nothing on
+  this chart marked it — so "is this up or down today" had to be read by eye off the axis.
+  `data/agg/previousClose.ts` derives it from the bars already on screen rather than
+  fetching it: it costs no request, works for any instrument at any timeframe, and agrees
+  with what is drawn by construction. A quote's `previousClose` answers a different
+  question — the vendor's level for the CURRENT session — which is right for the watchlist
+  and wrong for a line drawn across bars the reader has scrolled back through.
+
+  Three things this surfaced:
+
+  **The overlay channel already existed and had never had a caller.** `PriceLineOverlay`
+  supported the dash pattern, the price-gutter tag and inclusion in the §4 autoscale extent,
+  and `overlays: []` was passed on every single frame. A complete, tested, unreachable
+  feature — the kind that reads as done in a file listing.
+
+  **A sixth hand-maintained list.** `applySettingsTo` in `main.ts` copied `ChartSettingsForm`
+  field by field into `updateSettings`. The new setting reached the dialog, the workspace
+  and the chart, and died in that one function: the checkbox moved and the screen did not
+  change. It spreads now, with the two colour fields destructured out explicitly because
+  they are genuinely not passthrough — they are folded into the theme — which is the
+  distinction a copied list buries. Only a live browser found this; every unit test passed.
+
+  **The autoscale cache's documented contract.** `frame.ts` says overlays are excluded from
+  the cache key and "a caller that swaps the overlay set must `clear()`". Toggling the
+  setting swaps the overlay set. Without the clear, hiding a line that had been widening
+  the range leaves the axis padded for a line no longer drawn until some unrelated edit
+  bumps the revision.
+
+  Also fixed on the way past: the settings dialog and the toolbar gear both had
+  `id="chart-settings"`. Two elements, one id, and the only reason `querySelector` returned
+  the button is that the dialog is appended to `<body>` later. An existing test had already
+  learned to hedge with a two-branch selector rather than trust it.
+
+  And one lesson about the tests themselves. The first version of the "sits on the right
+  row" check counted ink across the whole canvas row, which includes the price gutter — and
+  the line's tag there is a filled block sixteen pixels tall. So the check reported healthy
+  ink for any row within eight pixels of the line, which is most of the rows a wrong answer
+  lands on. A mutation that drew the line off the wrong bar entirely passed it. Counting the
+  plot only, and asserting *zero* ink four pixels away, kills that mutation and two others.
+  The cancel test had the same shape of hole: "unchanged after Escape" is trivially true for
+  a build that ignores the setting, so it now pins the live preview before pressing Escape.
+
+  What it deliberately does not do: guess. Fewer than two bars, a series that never leaves
+  one calendar day, or a non-finite zone offset all return `null` and draw nothing, because
+  a wrong line is indistinguishable from a real level. The session-straddles-midnight
+  assumption (true for US equities, false for FX and futures) is stated in the module rather
+  than left for a reader to discover.
+
 ## Deliberately still open
 - **Pine Script.** A compiler that does not actually parse Pine would emit confident,
   wrong diagnostics. If scripting is wanted, the honest version is a small documented

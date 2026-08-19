@@ -42,6 +42,14 @@ change. Click a row to chart it; type a ticker to add one; hover a row for the �
 is remembered across reloads — the prices are not, because a stored price is wrong the
 moment it is read back.
 
+## Previous close
+
+A dashed line marks the previous session's close, with a tag in the price gutter — the level
+every other price on the chart is read against. It is derived from the bars on screen, not
+fetched, so it costs no request and works at any timeframe. When the loaded range does not
+contain a previous session it draws nothing rather than guessing. Turn it off in the gear
+menu.
+
 ## Using it on a phone or tablet
 
 **Over your own Wi-Fi**, with nothing to deploy:

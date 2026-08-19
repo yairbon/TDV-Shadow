@@ -20,6 +20,7 @@ import {
 
 export interface ChartSettingsForm {
   readonly showGrid: boolean;
+  readonly showPreviousClose: boolean;
   /** IANA zone for time labels. */
   readonly timeZone: string;
   readonly pricePrecision: number;
@@ -41,7 +42,12 @@ export interface ChartDialog {
 }
 
 export function createChartDialog(host: HTMLElement = document.body): ChartDialog {
-  const sheet = createSheet('chart-settings', host);
+  // Not 'chart-settings': the toolbar gear button already owns that id, and two elements
+  // sharing one id is invalid HTML — `document.querySelector('#chart-settings')` then
+  // returns whichever happens to come first in document order, which is the button only
+  // because this dialog is appended to <body> at runtime. A test had already learned to
+  // hedge with a two-branch selector rather than trust it.
+  const sheet = createSheet('chart-settings-sheet', host);
 
   return {
     open(request) {
@@ -63,6 +69,14 @@ export function createChartDialog(host: HTMLElement = document.body): ChartDialo
           value: current.showGrid,
           onChange: (showGrid) => {
             patch({ showGrid });
+          },
+        }),
+        checkboxField({
+          label: 'Previous close',
+          id: 'chart-prev-close',
+          value: current.showPreviousClose,
+          onChange: (showPreviousClose) => {
+            patch({ showPreviousClose });
           },
         }),
         numberField({

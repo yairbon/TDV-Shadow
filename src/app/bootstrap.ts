@@ -26,6 +26,9 @@ import {
 import { bindPointer, type PointerBindings } from '../interaction/pointer.js';
 import { buildFrameInput, createAutoscaleCache, type FrameInput } from '../renderer/frame.js';
 import { makePriceRange, type PriceRange } from '../renderer/scale/priceScale.js';
+import type { Overlay } from '../renderer/layers/overlayLayer.js';
+import { offsetMinutes } from '../renderer/scale/timezone.js';
+import { previousSessionClose } from '../data/agg/previousClose.js';
 import {
   computeLayout,
   dividerAt,
@@ -112,6 +115,13 @@ export interface ChartSettings {
   readonly showGrid: boolean;
   /** Empty bars kept to the right of the newest one when snapped to realtime. */
   readonly rightMargin: number;
+  /**
+   * Draw a dashed line at the previous session's close, as TradingView does.
+   *
+   * On by default: it is the level every other price on the chart is read against, and a
+   * chart without it makes the reader estimate today's move by eye.
+   */
+  readonly showPreviousClose: boolean;
 }
 
 export interface ChartOptions {
@@ -419,6 +429,7 @@ export function createChart(o: ChartOptions): Chart {
   let showGrid = true;
   let rightMargin = 2;
   let timeZone: TimeZone = 'UTC';
+  let showPreviousClose = true;
   const canvases = createChartCanvases(o.container);
 
   const series = createSeriesStore({
@@ -1203,6 +1214,39 @@ export function createChart(o: ChartOptions): Chart {
         );
 
     /**
+     * The previous session's close, as a dashed line with a tag in the price gutter.
+     *
+     * Built from `frameSnapshot`, so on a resampling chart type it is the previous session
+     * of the BRICKS on screen rather than of the source bars — which is what a line drawn
+     * across those bricks has to mean.
+     *
+     * The overlay channel already existed, complete with dashes, a gutter tag and inclusion
+     * in autoscale (§4), and had never been handed a single overlay. This is its first
+     * caller.
+     */
+    const previousCloseOverlays = (): Overlay[] => {
+      if (!showPreviousClose) return [];
+      const bars = frameSnapshot.series.bars;
+      // The zone offset is resolved at the LAST bar: that is the session the line is
+      // "previous" to, and it is the only instant whose offset can change which day the
+      // comparison lands on.
+      const offset =
+        bars.length === 0 ? 0 : offsetMinutes(timeZone, bars[bars.length - 1].t) * 60_000;
+      const close = previousSessionClose(bars, frameSnapshot.series.tf, offset);
+      if (close === null) return [];
+      return [
+        {
+          kind: 'priceLine',
+          color: theme.axisText,
+          lineWidth: 1,
+          price: asPrice(close),
+          dash: [3, 3],
+          label: close.toFixed(pricePrecision),
+        },
+      ];
+    };
+
+    /**
      * One place that knows every field of the frame, so a rebuild cannot silently drop
      * one. It has bitten this function before: rebuilding for a dragged price axis
      * without re-passing the left range blanked the second axis mid-drag while the layout
@@ -1214,7 +1258,7 @@ export function createChart(o: ChartOptions): Chart {
         layout,
         theme,
         pricePrecision,
-        overlays: [],
+        overlays: previousCloseOverlays(),
         pointer: framePointer(),
         priceRange,
         priceScaleInverted: priceInverted,
@@ -1578,10 +1622,19 @@ export function createChart(o: ChartOptions): Chart {
       scheduler.invalidate(DirtyFlags.Crosshair);
     },
     measure: () => measure,
-    settings: () => ({ theme, timeZone, pricePrecision, showGrid, rightMargin }),
+    settings: () => ({ theme, timeZone, pricePrecision, showGrid, rightMargin, showPreviousClose }),
     updateSettings(patch) {
       theme = patch.theme ?? theme;
       timeZone = patch.timeZone ?? timeZone;
+      if ((patch.showPreviousClose ?? showPreviousClose) !== showPreviousClose) {
+        showPreviousClose = !showPreviousClose;
+        // The autoscale cache is keyed on (revision, from, to) and deliberately excludes
+        // the overlays, so its contract says a caller that SWAPS the overlay set must
+        // clear it. Toggling this setting does exactly that: without the clear, hiding a
+        // line that was widening the range leaves the axis padded for a line that is no
+        // longer drawn, until some unrelated edit bumps the revision.
+        autoscaleCache.clear();
+      }
       pricePrecision = patch.pricePrecision ?? pricePrecision;
       showGrid = patch.showGrid ?? showGrid;
       rightMargin = patch.rightMargin ?? rightMargin;

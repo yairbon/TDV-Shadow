@@ -530,6 +530,7 @@ const defaultChartSettings = (base: 'dark' | 'light'): ChartSettingsForm => {
   const theme = base === 'light' ? LIGHT_THEME : DARK_THEME;
   return {
     showGrid: true,
+    showPreviousClose: true,
     timeZone: 'UTC',
     pricePrecision: 2,
     rightMargin: 2,
@@ -1004,20 +1005,24 @@ function applyChartSettings(next: ChartSettingsForm): void {
 
 function applySettingsTo(target: Chart, next: ChartSettingsForm): void {
   const base = themeName === 'light' ? LIGHT_THEME : DARK_THEME;
+  // Spread, not a field-by-field copy. The copy was a hand-maintained restatement of
+  // `ChartSettingsForm`, and it failed the moment a field was added: `showPreviousClose`
+  // reached the dialog, the workspace and the chart, and was dropped in this one function,
+  // so the checkbox moved and nothing on screen changed. The two colour fields are pulled
+  // out explicitly because they are NOT passthrough — they are folded into the theme
+  // below — which is exactly the distinction a copied list buries.
+  const { upColor, downColor, ...passthrough } = next;
   target.updateSettings({
-    showGrid: next.showGrid,
-    timeZone: next.timeZone,
-    pricePrecision: next.pricePrecision,
-    rightMargin: next.rightMargin,
+    ...passthrough,
     // Volume keeps the theme's own translucent pair. Tinting it with the candle colour
     // looked right for a green/red palette and wrong for anything else, and volume is a
     // separate setting in TradingView for the same reason.
     theme: {
       ...base,
-      upBody: next.upColor,
-      upWick: next.upColor,
-      downBody: next.downColor,
-      downWick: next.downColor,
+      upBody: upColor,
+      upWick: upColor,
+      downBody: downColor,
+      downWick: downColor,
     },
   });
 }

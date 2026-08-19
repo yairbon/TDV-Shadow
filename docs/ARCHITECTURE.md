@@ -25,7 +25,8 @@ src/
 │  │  ├─ viewStore.ts       scrollPosition k, barSpacing s, scale mode
 │  │  └─ snapshot.ts        O(1) frozen view handed to the renderer
 │  └─ agg/
-│     └─ resample.ts        1m → 5m/15m/1h/1d rollup (client-side)
+│     ├─ resample.ts        1m → 5m/15m/1h/1d rollup (client-side)
+│     └─ previousClose.ts   previous session's close, from the bars on screen
 ├─ renderer/                ← pure paint; input = snapshot + scales + layout
 │  ├─ surface.ts            canvas creation, DPR transform, resize observer
 │  ├─ scheduler.ts          invalidate(mask) → single rAF → frame()

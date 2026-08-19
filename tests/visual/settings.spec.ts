@@ -472,7 +472,7 @@ const ink = (page: Page, layer: string): Promise<number> =>
 
 async function openChartSettings(page: Page): Promise<void> {
   await page.click('#chart-settings');
-  await page.waitForSelector('#chart-settings-dialog[open], dialog#chart-settings[open]');
+  await page.waitForSelector('#chart-settings-sheet[open]');
 }
 
 test.describe('chart settings', () => {

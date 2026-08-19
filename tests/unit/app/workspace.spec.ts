@@ -169,3 +169,42 @@ describe('workspace v3 round trip', () => {
     expect(loadWorkspace()?.panes[0].drawingsBySymbol['TSLA']).toBe('CURRENT');
   });
 });
+
+describe('a workspace written before the previous-close setting existed', () => {
+  it('keeps every other preference rather than rejecting the payload', () => {
+    // One missing boolean must not throw away the colours, the zone and the precision.
+    const stored = {
+      version: 3,
+      panes: [
+        {
+          symbol: 'AAPL',
+          timeframe: '1d',
+          chartType: 'candles',
+          priceScaleMode: 'linear',
+          priceScaleInverted: false,
+          indicators: [],
+          drawingsBySymbol: {},
+          alerts: null,
+          barSpacing: 8,
+          scrollPosition: 100,
+        },
+      ],
+      layout: '1',
+      renderer: 'canvas2d',
+      chartSettings: {
+        showGrid: false,
+        timeZone: 'America/New_York',
+        pricePrecision: 4,
+        rightMargin: 10,
+        upColor: '#26a69a',
+        downColor: '#ef5350',
+      },
+    };
+    localStorage.setItem('tdv-shadow.workspace', JSON.stringify(stored));
+    const restored = loadWorkspace();
+    expect(restored?.chartSettings?.pricePrecision).toBe(4);
+    expect(restored?.chartSettings?.timeZone).toBe('America/New_York');
+    // …and the new setting takes its default rather than becoming undefined.
+    expect(restored?.chartSettings?.showPreviousClose).toBe(true);
+  });
+});
